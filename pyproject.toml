@@ -1,0 +1,12 @@
+[project]
+name = "jarvis"
+version = "0.1.0"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
+markers = [
+    "llm: needs Ollama running with the configured model (skipped otherwise)",
+]

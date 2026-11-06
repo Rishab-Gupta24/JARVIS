@@ -1,0 +1,11 @@
+* text=auto
+
+# Binary test fixtures: never touch their bytes (the PDF looks like text to git).
+*.pdf binary
+*.png binary
+*.jpg binary
+*.xlsx binary
+*.wav binary
+
+# iCalendar files use CRLF by spec, and the tests check that's handled.
+*.ics -text

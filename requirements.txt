@@ -1,0 +1,21 @@
+fastapi>=0.115
+uvicorn>=0.32
+httpx>=0.27
+pydantic>=2.9
+python-dotenv>=1.0
+python-multipart>=0.0.12  # file uploads on POST /documents
+tzdata>=2024.1  # Windows has no system time-zone database for zoneinfo
+pdfplumber>=0.11  # PDF text and tables; also renders scanned pages for the vision model
+openpyxl>=3.1  # Excel, including merged cells (common in mess menus)
+
+# voice (milestone 3); all ONNX/CTranslate2, no PyTorch
+sounddevice>=0.5  # mic and speakers
+numpy>=2.0
+scipy>=1.13  # resampling TTS audio to 16 kHz
+faster-whisper>=1.2  # speech to text on the GPU (CTranslate2)
+nvidia-cublas-cu12>=12.4  # CUDA libraries CTranslate2 loads on Windows
+nvidia-cudnn-cu12>=9,<10
+openwakeword>=0.6  # "hey jarvis" + Silero VAD (imported via jarvis/voice/oww.py)
+onnxruntime>=1.20
+kokoro-onnx>=0.6  # natural voice
+piper-tts>=1.3  # fast voice
