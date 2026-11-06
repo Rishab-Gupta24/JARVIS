@@ -191,6 +191,37 @@ The reply arrives as an **ntfy** notification after 15 seconds to 2 minutes.
 
 ---
 
+## Part 3 — The Jarvis web app and the calendar (milestone 6)
+
+### Put Jarvis on your Home Screen
+
+1. On the iPhone, open **Safari** (it must be Safari for "Add to Home Screen").
+2. Type the address: your **ADDRESS** followed by `/app`
+   (for example `https://something.ts.net:8443/app`).
+3. Tap the **Share** button (square with an arrow) → scroll down → **Add to Home Screen** → **Add**.
+4. Open **Jarvis** from the Home Screen (the glowing ring icon).
+5. It asks for your token: type your **TOKEN** (the same `JARVIS_PHONE_TOKEN` as in the Shortcuts) → **Connect**.
+   It's remembered on the phone, so you only do this once.
+
+What you get:
+- **Ask:** type a question, or tap the **ring**, speak, and tap it again. Jarvis shows what it heard
+  and its answer, and says it out loud ("Speak replies" turns that off). The first time,
+  allow the microphone.
+- **Today:** your events, and today's mess menu with the next meal highlighted.
+- **Next 7 days** and **Important**: tap ☆ to mark something important (you then get phone
+  reminders for it), or ✕ to delete it.
+
+### See Jarvis's events in the iPhone Calendar
+
+1. In the Jarvis web app, scroll to the bottom and tap **Add Jarvis to iPhone Calendar**.
+2. iOS asks to **Subscribe** → tap **Subscribe** → **Add**.
+3. A **Jarvis** calendar appears in the Calendar app with your events and festivals.
+   Important ones start with ★.
+
+It's read-only: add or change events through Jarvis, and the iPhone Calendar picks them up
+(iOS refreshes subscribed calendars about once an hour; to change that, go to Settings →
+Calendar → Accounts → Fetch New Data). It only updates while Tailscale is connected.
+
 ### If something goes wrong
 
 | What you see | What to do |
@@ -198,6 +229,9 @@ The reply arrives as an **ntfy** notification after 15 seconds to 2 minutes.
 | "Could not connect to the server" | Open the Tailscale app and make sure it says **Connected**. Check that the PC is on, with `jarvis serve` running. |
 | "Missing or wrong token" | Open the **Get Contents of URL** block → Headers. It must be exactly `Bearer` + one space + TOKEN, with no extra spaces. |
 | Nothing is spoken, or the notification is empty | In the **Speak** or **Show Notification** block, check the blue variable is **Contents of URL**. |
+| Web app: "Microphone not allowed" | iPhone Settings → Apps → Safari → Microphone → Allow (or Ask). |
+| Web app: "That token wasn't accepted" | Type the TOKEN again, the same one as in the Shortcuts. |
+| Calendar subscription fails | Make sure Tailscale is connected, then tap the button in the web app again. |
 | "Send to Jarvis" isn't in the Share menu | Open the shortcut → **ⓘ** → turn on **Show in Share Sheet**. In the share menu, scroll right in the bottom row, or tap **Edit Actions**, to find it. |
 
 Offline use (no PC reachable, sync later) comes in milestone 7.

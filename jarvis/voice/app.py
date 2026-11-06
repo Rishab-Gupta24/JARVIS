@@ -55,7 +55,8 @@ def build(settings: Settings, conn: sqlite3.Connection, *, source=None, mouth=No
     vad = SileroVad(settings.models_dir)
     if mouth is None:
         voice = step(f"voice {settings.tts_engine} {settings.tts_voice}",
-                     lambda: make_voice(settings.tts_engine, settings.models_dir, settings.tts_voice))
+                     lambda: make_voice(settings.tts_engine, settings.models_dir, settings.tts_voice,
+                                        settings.tts_speed))
         mouth = Speaker(voice)
     if source is None:
         source = Microphone(settings.mic_device)

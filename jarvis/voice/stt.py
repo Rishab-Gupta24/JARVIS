@@ -17,6 +17,27 @@ _HALLUCINATIONS = {
 _WAKE = re.compile(r"^\W*(?:(?:hey|hi|hay|a|okay|ok)\W+)?(?:jarvis|jarvis's|jervis|javis|travis)\b\W*", re.I)
 
 
+def decode_audio(data: bytes) -> np.ndarray:
+    """Any recording PyAV can open -> 16 kHz mono float32 in [-1, 1].
+
+    Our own decoder because faster-whisper 1.2.1's passes `metadata_errors=` to av.open(),
+    which PyAV 19 removed: every uploaded recording failed (caught by test_web.py)."""
+    import io
+
+    import av
+
+    chunks = []
+    with av.open(io.BytesIO(data)) as container:
+        stream = next(s for s in container.streams if s.type == "audio")
+        resampler = av.AudioResampler(format="s16", layout="mono", rate=16000)
+        for frame in container.decode(stream):
+            chunks += [f.to_ndarray().reshape(-1) for f in resampler.resample(frame)]
+        chunks += [f.to_ndarray().reshape(-1) for f in resampler.resample(None)]
+    if not chunks:
+        return np.zeros(0, dtype=np.float32)
+    return np.concatenate(chunks).astype(np.float32) / 32768.0
+
+
 def strip_wake(text: str) -> str:
     return _WAKE.sub("", text.strip(), count=1).strip()
 
@@ -39,6 +60,14 @@ class Transcriber:
     def warm(self) -> None:
         """The first GPU run compiles kernels; do it now rather than on the first question."""
         self.transcribe(np.zeros(16000, dtype=np.float32))
+
+    def transcribe_file(self, data: bytes) -> str:
+        """A recorded file (the web app's mic: AAC/MP4 on iPhone Safari, WebM/Opus on Chrome)."""
+        segments, _ = self._model.transcribe(
+            decode_audio(data), language="en", beam_size=5, condition_on_previous_text=False,
+            hotwords="Jarvis", vad_filter=True,
+        )
+        return " ".join(s.text.strip() for s in segments if s.no_speech_prob < 0.8).strip()
 
     def transcribe(self, audio: np.ndarray) -> str:
         """16 kHz mono float32 in [-1, 1] -> text."""

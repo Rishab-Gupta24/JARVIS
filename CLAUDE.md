@@ -85,6 +85,15 @@ The model copies the user's own words into tool arguments (`date="next friday"`,
 - **Menus from photos (or scanned PDFs) are refused** with `ingest.PHOTO_MENU` (user's choice). Real menu PDFs are read by **`documents/layout.py`**: word positions, not table detection. That handles spaced headings ("B R E A K F A S T"), "MONDAY / Date-2/11/2026" labels, one dish per line, cell borders drawn as rectangles, and per-line shading. Row and column borders are edges covering ≥95% of the table. Used when a page has ≥2 meal headings and ≥3 day names. The extra **PS11** column is ignored (user's choice).
 - `ingest.reread(conn, doc_id, ...)` re-reads a stored file after a parser fix (`store.delete` + ingest).
 
+### Web app and calendar feed — `jarvis/web/`, `jarvis/calendar/ics.py`
+
+- `GET /app` serves one HTML file, plain JavaScript with no build step: phone-first, dark and light themes, PWA manifest and icons (drawn by `jarvis/web/make_icons.py`). The page, manifest and icons need no token; all data does. The phone token is typed once and kept in localStorage.
+- Cards: Ask (text → `/ask`; mic → `/ask-audio`), Today (events + `/meals` with the next meal highlighted), Next 7 days (festivals shown muted), Important (30 days), ☆ toggle (PATCH) and ✕ delete, and "Add Jarvis to iPhone Calendar" (`/feed-url` → `webcal://`).
+- **Mic:** MediaRecorder (AAC/MP4 on iPhone Safari, Opus/WebM on Chrome) → `/ask-audio` → `stt.decode_audio` (our own PyAV decode to 16 kHz: faster-whisper 1.2.1 passes `metadata_errors=`, which PyAV 19 removed, and every upload failed) → Whisper, loaded on first use in `serve` (~1 GB VRAM) → agent.
+- **Voice:** replies are spoken in **Jarvis's own voice**: `/speak` returns WAV from Kokoro `TTS_VOICE` (user chose **bm_george**, British; `TTS_SPEED=0.95`), played through Web Audio, unlocked on a tap because iOS blocks sound that doesn't start from a tap. Fallback: a British iPhone voice. The earlier en-IN phone voice was replaced at the user's request. Kokoro can't sound like the film actor, and real voices must not be cloned.
+- **Feed:** `GET /calendar/<JARVIS_FEED_TOKEN>.ics` (iOS Calendar can't send headers, so a separate read-only token goes in the address; a wrong token gets 404). Events from 60 days ago to 400 days ahead; all-day events as DATE, timed ones in UTC; important ones start with "★ " and have PRIORITY:1; lines folded at 75 octets. The uvicorn access log masks the token (`_HideFeedToken`).
+- Tested in a browser against a throwaway copy of Jarvis on :8799 with sample data and a made-up token, never the real calendar.
+
 ### Reminders to the phone — `jarvis/notify/`
 
 - Path: Jarvis → ntfy on `127.0.0.1:2586` → (content-free poll request) ntfy.sh → Apple push → iPhone ntfy app → fetches the text from the PC's Tailscale HTTPS name, `NTFY_PUBLIC_URL` in `.env` (`tailscale serve` → port 2586, tailnet only). Keep that name out of committed files: the GitHub repo is public. Without Tailscale on the phone it shows only "New message".
@@ -158,7 +167,7 @@ Rules:
    Done when: an important test event 15 min out alerts the phone on mobile data.
 5. **iPhone online** — Tailscale, "Jarvis" Shortcut (Dictate → POST /ask → Speak), "Send to Jarvis" Share Sheet Shortcut (POST /send). **✅ Done 6 Nov 2026 (one gap):** both Shortcuts built; Jarvis answers by voice on the iPhone; from the phone, the user's real menu PDF was stored exactly (28/28, dated 2–8 Nov), and a shared department email (PDF) became an event (Mon 9 Nov), with a resend caught as a duplicate. Gap: a WhatsApp *text* share hasn't been seen from the phone yet; the same `/send` text path passes over Tailscale HTTPS from the PC and in 5 real-model WhatsApp tests.
    Done when: a forwarded WhatsApp message becomes an event, and a shared menu ~~photo~~ **PDF** becomes a stored menu. *Changed by the user, 6 Nov 2026: menus from photos are refused (the local vision model read only ~72% of dish lines exactly on a real notice-board photo, even day by day with JSON output); photos of notices/posters still add their events.*
-6. **Web app + calendar feed** — agenda page, mic button over HTTPS, `calendar.ics`.
+6. **Web app + calendar feed** — agenda page, mic button over HTTPS, `calendar.ics`. **✅ Done 6 Nov 2026:** on the user's iPhone, added to the Home Screen; the mic asked and answered (`/ask-audio` → Whisper → qwen3 → `/speak` in Jarvis's voice), and the iPhone Calendar subscribed to the feed (97 events incl. festivals).
 7. **Offline fallback** — Shortcut offline branch (on-device Use Model → Dictionary output), `jarvis-queue.txt`, sync, Apple Reminders "Jarvis" list mirror for important items.
    Done when: an event captured in airplane mode appears on the PC after reconnecting, exactly once.
 8. **Polish** — recurring events, clash warnings, spoken morning briefing with today's meals, auto-start at Windows login, timetable files → recurring events.

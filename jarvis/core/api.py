@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
 import secrets
 import sqlite3
 import threading
@@ -13,10 +15,12 @@ from typing import Callable, Iterator
 from fastapi import (APIRouter, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response,
                      UploadFile)
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
-from jarvis.calendar import db, holidays, repo
+from pathlib import Path
+
+from jarvis.calendar import db, holidays, ics, repo
 from jarvis.calendar.repo import local_midnight
 from jarvis.config import TZ, Settings
 from jarvis.core import agent
@@ -62,6 +66,17 @@ class EventPatch(BaseModel):
     important: bool | None = None
 
 
+class _HideFeedToken(logging.Filter):
+    """The calendar feed's token is in its address; keep it out of the access log."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple) and len(record.args) >= 3:
+            args = list(record.args)
+            args[2] = re.sub(r"/calendar/[^/?\s]+\.ics", "/calendar/<feed-token>.ics", str(args[2]))
+            record.args = tuple(args)
+        return True
+
+
 def _parse_dt(value: str) -> datetime:
     try:
         dt = datetime.fromisoformat(value)
@@ -78,6 +93,8 @@ def create_app(
     watch_inbox: bool = True,
     fetch_holidays: bool = True,
     send_reminders: bool = True,
+    stt=None,  # speech to text for the web app's mic; loaded on first use when None
+    voice=None,  # Jarvis's voice for /speak; loaded on first use when None
 ) -> FastAPI:
     settings = settings or Settings.from_env()
     if not settings.token:
@@ -133,6 +150,9 @@ def create_app(
         if reminders:
             reminders.stop()
 
+    access_log = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, _HideFeedToken) for f in access_log.filters):
+        access_log.addFilter(_HideFeedToken())
     app = FastAPI(title="Jarvis", docs_url=None, redoc_url=None, lifespan=lifespan)
     api = APIRouter(dependencies=[Depends(require_token)])
 
@@ -309,6 +329,141 @@ def create_app(
             threading.Thread(target=later, name="send", daemon=True).start()
             return "Got the photo. I'm reading it now and will send you a notification when it's done."
         return await run_in_threadpool(run)
+
+    # ---------- the web app (milestone 6) ----------
+
+    stt_holder: dict = {"stt": stt}
+    stt_lock = threading.Lock()
+
+    def get_stt():
+        """Whisper loads on the first spoken question, not at startup (~1 GB of VRAM)."""
+        with stt_lock:
+            if stt_holder["stt"] is None:
+                from jarvis.voice.stt import Transcriber
+
+                stt_holder["stt"] = Transcriber(settings.whisper_model, settings.whisper_device,
+                                                settings.whisper_compute, settings.models_dir)
+            return stt_holder["stt"]
+
+    @api.post("/ask-audio")
+    async def ask_audio(request: Request, session: str = Query(default="web", max_length=100)) -> dict:
+        """The web app's mic: a recording (form file or raw body) -> what was heard, and the reply."""
+        ctype = request.headers.get("content-type", "").lower()
+        if "multipart/form-data" in ctype:
+            form = await request.form()
+            files = [v for v in form.values() if hasattr(v, "read")]
+            data = await files[0].read() if files else b""
+        else:
+            data = await request.body()
+        if len(data) < 100:
+            return {"heard": "", "reply": "I didn't hear anything."}
+        if len(data) > MAX_BYTES:
+            return {"heard": "", "reply": "That recording is too long."}
+
+        def run() -> dict:
+            from jarvis.voice.stt import is_nothing, strip_wake
+
+            try:
+                heard = strip_wake(get_stt().transcribe_file(data))
+            except Exception as e:  # a recording PyAV can't decode, or no GPU
+                print(f"/ask-audio: couldn't transcribe: {e!r}", flush=True)
+                return {"heard": "", "reply": "Sorry, I couldn't make out that recording."}
+            if is_nothing(heard):
+                return {"heard": "", "reply": "I didn't catch that."}
+            conn = db.connect(settings.db_path)
+            try:
+                reply = agent.handle(heard, conn, llm, now=clock(), source="web", session=session,
+                                     memory=memory).text
+            except LLMError:
+                reply = "Sorry, I can't reach my language model right now."
+            finally:
+                conn.close()
+            return {"heard": heard, "reply": reply}
+
+        return await run_in_threadpool(run)
+
+    voice_holder: dict = {"voice": voice}
+    voice_lock = threading.Lock()  # loading
+    speak_lock = threading.Lock()  # speaking
+
+    def get_voice():
+        """Jarvis's own voice (Kokoro, TTS_VOICE), loaded on the first spoken reply."""
+        with voice_lock:
+            if voice_holder["voice"] is None:
+                from jarvis.voice.tts import make_voice
+
+                voice_holder["voice"] = make_voice(settings.tts_engine, settings.models_dir,
+                                                   settings.tts_voice, settings.tts_speed)
+            return voice_holder["voice"]
+
+    @api.post("/speak")
+    async def speak(request: Request) -> Response:
+        """Text in, Jarvis's voice out (WAV), so the web app sounds like Jarvis on the PC
+        rather than whatever voice the phone has."""
+        text = (await payload(request)).decode("utf-8", errors="replace").strip()[:2000]
+        if not text:
+            raise HTTPException(422, "Nothing to say.")
+
+        def run() -> bytes:
+            from jarvis.voice.tts import to_wav
+
+            v = get_voice()
+            with speak_lock:  # one synthesis at a time; Kokoro runs on the CPU
+                return to_wav(v, text)
+
+        try:
+            wav = await run_in_threadpool(run)
+        except Exception as e:
+            print(f"/speak: {e!r}", flush=True)
+            raise HTTPException(503, "Jarvis's voice isn't available.") from e
+        return Response(wav, media_type="audio/wav")
+
+    @api.get("/meals")
+    def meals(day: date | None = Query(default=None, alias="date"),
+              conn: sqlite3.Connection = Depends(get_conn)) -> dict:
+        """One day's mess menu exactly as stored, for the web app's 'Today' card."""
+        d = day or clock().date()
+        doc, rows = doc_store.menu_for_day(conn, d)
+        return {"date": d.isoformat(), "meals": {r.meal: r.items for r in rows} if doc else None}
+
+    @api.get("/feed-url")
+    def feed_url() -> dict:
+        """Where the iPhone Calendar subscribes. Needs the phone token, so the page can show it."""
+        if not (settings.feed_token and settings.public_url):
+            raise HTTPException(404, "Run `python -m jarvis phone-setup` to create the calendar feed.")
+        https = f"{settings.public_url}/calendar/{settings.feed_token}.ics"
+        return {"https": https, "webcal": "webcal://" + https.split("://", 1)[1]}
+
+    @app.get("/calendar/{token}.ics")
+    def calendar_feed(token: str, conn: sqlite3.Connection = Depends(get_conn)) -> Response:
+        """The subscription feed. iOS Calendar can't send headers, so the (read-only) token
+        is in the address. Anything wrong gets the same 404, so it reveals nothing."""
+        if not settings.feed_token or not secrets.compare_digest(token.encode(), settings.feed_token.encode()):
+            raise HTTPException(404)
+        now = clock()
+        events = repo.list_events(conn, now - ics.FEED_PAST, now + ics.FEED_FUTURE)
+        return Response(ics.calendar_ics(events, now), media_type="text/calendar; charset=utf-8",
+                        headers={"Cache-Control": "no-cache"})
+
+    web = Path(__file__).resolve().parent.parent / "web"
+
+    @app.get("/", include_in_schema=False)
+    def home() -> RedirectResponse:
+        return RedirectResponse("/app")
+
+    @app.get("/app", include_in_schema=False)
+    def web_app() -> FileResponse:
+        return FileResponse(web / "app.html", headers={"Cache-Control": "no-cache"})
+
+    @app.get("/manifest.webmanifest", include_in_schema=False)
+    def manifest() -> FileResponse:
+        return FileResponse(web / "manifest.webmanifest", media_type="application/manifest+json")
+
+    @app.get("/icon-{size}.png", include_in_schema=False)
+    def icon(size: int) -> FileResponse:
+        if size not in (180, 192, 512):
+            raise HTTPException(404)
+        return FileResponse(web / f"icon-{size}.png", media_type="image/png")
 
     @api.get("/documents")
     def get_documents(conn: sqlite3.Connection = Depends(get_conn)) -> list[dict]:

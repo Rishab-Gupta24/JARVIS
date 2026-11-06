@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Jarvis</title>
+<meta name="theme-color" content="#0b1220">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Jarvis">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<link rel="icon" href="/icon-192.png">
+<style>
+  :root {
+    --bg: #0b1220; --panel: #111a2e; --panel-2: #16223b; --line: #22304d;
+    --text: #e6edf7; --muted: #8b9bb8; --accent: #38bdf8; --accent-soft: rgba(56,189,248,.14);
+    --star: #fbbf24; --danger: #f87171; --ok: #34d399;
+    --radius: 16px; --shadow: 0 1px 0 rgba(255,255,255,.03) inset, 0 8px 24px rgba(0,0,0,.25);
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f4f7fb; --panel: #ffffff; --panel-2: #eef3fa; --line: #dbe3ef;
+      --text: #0f1a2e; --muted: #5b6b86; --accent: #0284c7; --accent-soft: rgba(2,132,199,.10);
+      --star: #d97706; --danger: #dc2626; --ok: #059669;
+      --shadow: 0 1px 2px rgba(15,26,46,.06), 0 6px 18px rgba(15,26,46,.06);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body {
+    font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: max(14px, env(safe-area-inset-top)) 16px max(28px, env(safe-area-inset-bottom));
+    max-width: 640px; margin: 0 auto; -webkit-tap-highlight-color: transparent;
+  }
+  header { display: flex; align-items: center; justify-content: space-between; margin: 4px 2px 16px; }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand img { width: 34px; height: 34px; border-radius: 9px; }
+  h1 { font-size: 22px; margin: 0; letter-spacing: .2px; }
+  .date { color: var(--muted); font-size: 14px; }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  .icon-btn { background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+              width: 40px; height: 40px; display: grid; place-items: center; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+          box-shadow: var(--shadow); padding: 16px; margin-bottom: 14px; }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .9px; color: var(--muted);
+             margin: 0 0 10px; font-weight: 600; }
+
+  /* ask */
+  .ask { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; }
+  .ask form { display: flex; gap: 8px; }
+  .ask input { flex: 1; min-width: 0; background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
+               border-radius: 12px; padding: 12px 14px; font: inherit; outline: none; }
+  .ask input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .send { background: var(--accent); color: #fff; border: 0; border-radius: 12px; padding: 0 16px; font-weight: 600; }
+  .mic { width: 64px; height: 64px; border-radius: 50%; border: 0; background: var(--panel-2);
+         box-shadow: inset 0 0 0 3px var(--accent), 0 0 18px var(--accent-soft); display: grid; place-items: center; }
+  .mic span { width: 14px; height: 14px; border-radius: 50%; background: var(--accent); transition: all .2s; }
+  .mic.listening { box-shadow: inset 0 0 0 3px var(--danger), 0 0 24px rgba(248,113,113,.35); }
+  .mic.listening span { background: var(--danger); border-radius: 3px; }
+  .mic.busy span { animation: pulse 1s infinite ease-in-out; }
+  @keyframes pulse { 50% { transform: scale(.55); opacity: .5; } }
+  @media (prefers-reduced-motion: reduce) { .mic.busy span { animation: none; } }
+  .status { color: var(--muted); font-size: 14px; min-height: 20px; margin-top: 8px; }
+  .chat { margin-top: 6px; display: grid; gap: 8px; }
+  .bubble { padding: 10px 12px; border-radius: 12px; font-size: 15px; max-width: 92%; }
+  .bubble.you { background: var(--panel-2); justify-self: end; color: var(--muted); }
+  .bubble.jarvis { background: var(--accent-soft); border: 1px solid var(--line); }
+  .row-toggle { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; margin-top: 10px; }
+
+  /* lists */
+  .day + .day { margin-top: 14px; }
+  .day-name { font-weight: 600; font-size: 15px; margin-bottom: 6px; }
+  .event { display: grid; grid-template-columns: 74px 1fr auto; gap: 10px; align-items: center;
+           padding: 9px 0; border-top: 1px solid var(--line); }
+  .day .event:first-of-type, .list .event:first-child { border-top: 0; }
+  .time { color: var(--muted); font-size: 14px; font-variant-numeric: tabular-nums; }
+  .title { font-weight: 500; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .sub::first-letter { text-transform: uppercase; }
+  .holiday .title { color: var(--muted); font-weight: 400; }
+  .tag { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; margin-left: 6px; }
+  .actions { display: flex; gap: 4px; }
+  .actions button { background: none; border: 0; width: 34px; height: 34px; border-radius: 10px; font-size: 18px; color: var(--muted); }
+  .actions button:hover { background: var(--panel-2); }
+  .actions .on { color: var(--star); }
+  .empty { color: var(--muted); font-size: 14px; }
+
+  .meals { display: grid; gap: 8px; margin-top: 12px; }
+  .meal { background: var(--panel-2); border-radius: 12px; padding: 10px 12px; border: 1px solid transparent; }
+  .meal.next { border-color: var(--accent); }
+  .meal b { display: block; font-size: 12px; text-transform: uppercase; letter-spacing: .7px; color: var(--muted); margin-bottom: 2px; }
+  .meal.next b { color: var(--accent); }
+
+  .setup input { width: 100%; margin: 10px 0; }
+  .setup p { color: var(--muted); font-size: 14px; margin: 6px 0; }
+  .wide-btn { width: 100%; padding: 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel-2); font-weight: 600; }
+  .wide-btn.primary { background: var(--accent); color: #fff; border: 0; }
+  footer { display: grid; gap: 10px; }
+  .error { color: var(--danger); font-size: 14px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <img src="/icon-180.png" alt="">
+    <div><h1>Jarvis</h1><div class="date" id="today-label"></div></div>
+  </div>
+  <button class="icon-btn" id="refresh" aria-label="Refresh">⟳</button>
+</header>
+
+<section class="card setup" id="setup" hidden>
+  <h2>Connect</h2>
+  <p>Enter your phone token: the <b>JARVIS_PHONE_TOKEN</b> value in <code>.env</code> on your PC. It's kept on this device only.</p>
+  <form id="setup-form" class="ask"><input id="token-input" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="20 letters and numbers" style="grid-column: 1 / -1"></form>
+  <button class="wide-btn primary" id="token-save">Connect</button>
+  <p class="error" id="setup-error"></p>
+</section>
+
+<main id="main" hidden>
+  <section class="card">
+    <div class="ask">
+      <form id="ask-form"><input id="ask-input" placeholder="Ask or tell Jarvis…" autocomplete="off" enterkeyhint="send">
+        <button class="send" aria-label="Send">↑</button></form>
+      <button class="mic" id="mic" aria-label="Speak to Jarvis"><span></span></button>
+    </div>
+    <div class="status" id="status">Tap the ring and speak, then tap again.</div>
+    <div class="chat" id="chat"></div>
+    <label class="row-toggle"><input type="checkbox" id="speak-toggle" checked> Speak replies</label>
+  </section>
+
+  <section class="card">
+    <h2>Today</h2>
+    <div class="list" id="today"></div>
+    <div class="meals" id="meals"></div>
+  </section>
+
+  <section class="card">
+    <h2>Next 7 days</h2>
+    <div id="week"></div>
+  </section>
+
+  <section class="card">
+    <h2>Important · next 30 days</h2>
+    <div class="list" id="important"></div>
+  </section>
+
+  <footer>
+    <a class="wide-btn" id="subscribe" style="text-align:center;text-decoration:none" hidden>Add Jarvis to iPhone Calendar</a>
+    <button class="wide-btn" id="signout">Forget token on this device</button>
+  </footer>
+</main>
+
+<script>
+const TZ = "Asia/Dubai";
+const MEALS = ["breakfast", "lunch", "snacks", "dinner"];
+const $ = (s) => document.querySelector(s);
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+  del(k) { try { localStorage.removeItem(k); } catch {} },
+};
+
+// A token in the address (?token=...) is saved once and removed from the address.
+const params = new URLSearchParams(location.search);
+if (params.get("token")) { store.set("jarvis_token", params.get("token").trim()); history.replaceState(null, "", "/app"); }
+
+const fmtDate = (d, opts) => new Intl.DateTimeFormat("en-GB", { timeZone: TZ, ...opts }).format(d);
+const isoDay = (d) => new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(d); // YYYY-MM-DD
+const addDays = (d, n) => new Date(d.getTime() + n * 86400000);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+function timeOf(iso) {
+  const [h, m] = iso.slice(11, 16).split(":").map(Number);
+  const hh = h % 12 || 12, ap = h < 12 ? "am" : "pm";
+  return m ? `${hh}:${String(m).padStart(2, "0")} ${ap}` : `${hh} ${ap}`;
+}
+
+async function api(path, { method = "GET", json, body, text } = {}) {
+  const headers = { Authorization: "Bearer " + store.get("jarvis_token") };
+  if (json !== undefined) { headers["Content-Type"] = "application/json"; body = JSON.stringify(json); }
+  const r = await fetch(path, { method, headers, body });
+  if (r.status === 401) { showSetup("That token wasn't accepted. Check it and try again."); throw new Error("401"); }
+  if (!r.ok && r.status !== 204) throw new Error(`${r.status}`);
+  if (r.status === 204) return null;
+  return text ? r.text() : r.json();
+}
+
+function showSetup(error = "") {
+  $("#main").hidden = true; $("#setup").hidden = false; $("#setup-error").textContent = error;
+}
+
+async function connect() {
+  const t = $("#token-input").value.trim();
+  if (!t) return;
+  store.set("jarvis_token", t);
+  $("#setup").hidden = true; $("#main").hidden = false;
+  load();
+}
+$("#token-save").onclick = connect;
+$("#setup-form").onsubmit = (e) => { e.preventDefault(); connect(); };
+$("#signout").onclick = () => { store.del("jarvis_token"); showSetup(); };
+
+// ---------- agenda ----------
+
+function eventRow(e, { showDay = false } = {}) {
+  const when = e.all_day ? "All day" : timeOf(e.start);
+  const day = showDay ? `<div class="sub">${esc(e.when)}</div>` : "";
+  const where = e.location ? `<div class="sub">${esc(e.location)}</div>` : "";
+  const tag = e.source === "holiday" ? `<span class="tag">holiday</span>` : "";
+  return `<div class="event ${e.source === "holiday" ? "holiday" : ""}" data-id="${e.id}">
+    <div class="time">${showDay ? "" : when}</div>
+    <div><div class="title">${esc(e.title)}${tag}</div>${showDay ? day : where}</div>
+    <div class="actions">
+      <button class="${e.important ? "on" : ""}" data-act="star" aria-label="${e.important ? "Unmark important" : "Mark important"}">${e.important ? "★" : "☆"}</button>
+      <button data-act="delete" aria-label="Delete">✕</button>
+    </div></div>`;
+}
+
+function nextMeal() {
+  const h = Number(fmtDate(new Date(), { hour: "numeric", hour12: false }));
+  return h < 10 ? "breakfast" : h < 15 ? "lunch" : h < 18 ? "snacks" : "dinner";
+}
+
+async function load() {
+  const now = new Date();
+  $("#today-label").textContent = fmtDate(now, { weekday: "long", day: "numeric", month: "long" });
+  const today = isoDay(now);
+  try {
+    const [week, month, meals, feed] = await Promise.all([
+      api(`/events?from=${today}&to=${isoDay(addDays(now, 7))}`),
+      api(`/events?from=${today}&to=${isoDay(addDays(now, 30))}`),
+      api(`/meals?date=${today}`),
+      api("/feed-url").catch(() => null),
+    ]);
+    const todays = week.filter((e) => e.start.slice(0, 10) <= today && e.end.slice(0, 10) >= today && !(e.all_day && e.end.slice(0, 10) === today));
+    $("#today").innerHTML = todays.length ? todays.map((e) => eventRow(e)).join("") : `<div class="empty">Nothing on today.</div>`;
+
+    if (meals.meals) {
+      const next = nextMeal();
+      $("#meals").innerHTML = MEALS.filter((m) => meals.meals[m]).map((m) =>
+        `<div class="meal ${m === next ? "next" : ""}"><b>${m}${m === next ? " · next" : ""}</b>${esc(meals.meals[m])}</div>`).join("");
+    } else {
+      $("#meals").innerHTML = `<div class="empty">No mess menu for today.</div>`;
+    }
+
+    const later = week.filter((e) => e.start.slice(0, 10) > today);
+    const byDay = {};
+    for (const e of later) (byDay[e.start.slice(0, 10)] ||= []).push(e);
+    $("#week").innerHTML = Object.keys(byDay).length ? Object.entries(byDay).map(([d, list]) =>
+      `<div class="day"><div class="day-name">${fmtDate(new Date(d + "T12:00:00+04:00"), { weekday: "long", day: "numeric", month: "short" })}</div>
+       ${list.map((e) => eventRow(e)).join("")}</div>`).join("") : `<div class="empty">Nothing in the next 7 days.</div>`;
+
+    const imp = month.filter((e) => e.important);
+    $("#important").innerHTML = imp.length ? imp.map((e) => eventRow(e, { showDay: true })).join("") : `<div class="empty">Nothing marked important.</div>`;
+
+    if (feed) { $("#subscribe").href = feed.webcal; $("#subscribe").hidden = false; }
+  } catch (err) {
+    if (err.message !== "401") $("#status").textContent = "Couldn't reach Jarvis. Is the PC on, and Tailscale connected?";
+  }
+}
+
+document.addEventListener("click", async (ev) => {
+  const btn = ev.target.closest("[data-act]");
+  if (!btn) return;
+  const row = btn.closest(".event"), id = row.dataset.id;
+  const title = row.querySelector(".title").firstChild.textContent;
+  if (btn.dataset.act === "delete") {
+    if (!confirm(`Delete "${title}"?`)) return;
+    await api(`/events/${id}`, { method: "DELETE" });
+  } else {
+    await api(`/events/${id}`, { method: "PATCH", json: { important: !btn.classList.contains("on") } });
+  }
+  load();
+});
+
+// ---------- talking ----------
+
+// Jarvis speaks with its own voice (Kokoro on the PC, via /speak), not the phone's.
+let audioCtx = null, playing = null;
+function unlockVoice() { // iOS only plays sound that starts from a tap: open the audio path here
+  try {
+    audioCtx ||= new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") audioCtx.resume();
+    const src = audioCtx.createBufferSource();
+    src.buffer = audioCtx.createBuffer(1, 1, 22050); src.connect(audioCtx.destination); src.start(0);
+  } catch {}
+}
+function stopSpeaking() {
+  try { playing?.stop(); } catch {}
+  playing = null;
+  if ("speechSynthesis" in window) speechSynthesis.cancel();
+}
+async function speak(text) {
+  if (!$("#speak-toggle").checked) return;
+  try {
+    const r = await fetch("/speak", { method: "POST", body: JSON.stringify({ text }),
+      headers: { Authorization: "Bearer " + store.get("jarvis_token"), "Content-Type": "application/json" } });
+    if (!r.ok || !audioCtx) throw new Error(String(r.status));
+    const buffer = await audioCtx.decodeAudioData(await r.arrayBuffer());
+    stopSpeaking();
+    playing = audioCtx.createBufferSource();
+    playing.buffer = buffer; playing.connect(audioCtx.destination); playing.start(0);
+  } catch { phoneVoice(text); }
+}
+function phoneVoice(text) { // fallback only: a British voice, measured pace
+  if (!("speechSynthesis" in window)) return;
+  const u = new SpeechSynthesisUtterance(text);
+  const voices = speechSynthesis.getVoices().filter((v) => v.lang === "en-GB");
+  u.voice = voices.find((v) => /Daniel|Arthur|Oliver|Malcolm/.test(v.name)) || voices[0] || null;
+  u.rate = 0.95;
+  stopSpeaking(); speechSynthesis.speak(u);
+}
+function say(who, text) {
+  const b = document.createElement("div");
+  b.className = `bubble ${who}`; b.textContent = text;
+  $("#chat").append(b);
+  while ($("#chat").children.length > 6) $("#chat").firstChild.remove();
+}
+
+$("#ask-form").onsubmit = async (e) => {
+  e.preventDefault(); unlockVoice();
+  const text = $("#ask-input").value.trim();
+  if (!text) return;
+  $("#ask-input").value = ""; say("you", text); $("#status").textContent = "Thinking…";
+  try {
+    const reply = await api("/ask?session=web", { method: "POST", json: { text }, text: true });
+    say("jarvis", reply); speak(reply); $("#status").textContent = "";
+    load();
+  } catch (err) { if (err.message !== "401") $("#status").textContent = "Couldn't reach Jarvis."; }
+};
+
+let recorder = null, stopTimer = null;
+$("#mic").onclick = async () => {
+  unlockVoice();
+  const mic = $("#mic");
+  if (recorder && recorder.state === "recording") { recorder.stop(); return; }
+  stopSpeaking(); // don't record Jarvis's own voice
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+  catch { $("#status").textContent = "Microphone not allowed. Check the browser's microphone permission."; return; }
+  const type = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm"].find((t) => window.MediaRecorder && MediaRecorder.isTypeSupported(t));
+  recorder = new MediaRecorder(stream, type ? { mimeType: type } : undefined);
+  const chunks = [];
+  recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+  recorder.onstop = async () => {
+    clearTimeout(stopTimer); stream.getTracks().forEach((t) => t.stop());
+    mic.classList.remove("listening"); mic.classList.add("busy"); $("#status").textContent = "Thinking…";
+    const blob = new Blob(chunks, { type: recorder.mimeType });
+    const form = new FormData();
+    form.append("file", blob, "speech." + (recorder.mimeType.includes("mp4") ? "m4a" : "webm"));
+    try {
+      const r = await api("/ask-audio?session=web", { method: "POST", body: form });
+      if (r.heard) say("you", r.heard);
+      say("jarvis", r.reply); speak(r.reply); $("#status").textContent = "";
+      load();
+    } catch (err) { if (err.message !== "401") $("#status").textContent = "Couldn't reach Jarvis."; }
+    mic.classList.remove("busy");
+  };
+  recorder.start();
+  mic.classList.add("listening"); $("#status").textContent = "Listening… tap again when you're done.";
+  stopTimer = setTimeout(() => recorder.state === "recording" && recorder.stop(), 15000);
+};
+
+$("#refresh").onclick = load;
+document.addEventListener("visibilitychange", () => { if (!document.hidden && store.get("jarvis_token")) load(); });
+
+if (store.get("jarvis_token")) { $("#main").hidden = false; load(); } else { showSetup(); }
+</script>
+</body>
+</html>

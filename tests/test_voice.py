@@ -193,6 +193,28 @@ def test_sentences_are_spoken_one_at_a_time():
     assert tts.sentences("Is it 2.5 hours? Yes.") == ["Is it 2.5 hours?", "Yes."]
 
 
+@pytest.mark.parametrize("fmt, codec", [("mp4", "aac"), ("webm", "libopus"), ("wav", "pcm_s16le")])
+def test_decode_audio_from_browser_recordings(fmt, codec):
+    """iPhone Safari records AAC/MP4, Chrome Opus/WebM; both must come out as 16 kHz mono."""
+    import io
+
+    import av
+
+    rate = 48000
+    tone = (np.sin(np.linspace(0, 2 * np.pi * 440 * 1.5, int(rate * 1.5))) * 0.5 * 32767).astype(np.int16)
+    buf = io.BytesIO()
+    with av.open(buf, "w", format=fmt) as out:
+        stream = out.add_stream(codec, rate=rate)
+        stream.layout = "mono"
+        frame = av.AudioFrame.from_ndarray(tone[None, :], format="s16", layout="mono")
+        frame.sample_rate = rate
+        for packet in list(stream.encode(frame)) + list(stream.encode(None)):
+            out.mux(packet)
+    audio = stt.decode_audio(buf.getvalue())
+    assert audio.dtype == np.float32 and abs(len(audio) / 16000 - 1.5) < 0.1
+    assert 0.3 < np.abs(audio).max() <= 1.0
+
+
 def test_audio_helpers():
     one_second_48k = np.sin(np.linspace(0, 2 * np.pi * 440, 48000)).astype(np.float32) * 0.5
     pcm = to_pcm16k(one_second_48k, 48000)

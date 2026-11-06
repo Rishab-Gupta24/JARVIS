@@ -29,6 +29,8 @@ def setup(env_path=ROOT / ".env") -> dict[str, str]:
     env = read_env(env_path)
     values = {
         "JARVIS_PHONE_TOKEN": env.get("JARVIS_PHONE_TOKEN") or new_phone_token(),
+        # read-only token for the calendar.ics address; long, because nobody types it
+        "JARVIS_FEED_TOKEN": env.get("JARVIS_FEED_TOKEN") or secrets.token_urlsafe(24),
         "JARVIS_PUBLIC_URL": f"{base}:{HTTPS_PORT}",
     }
     out = subprocess.run([str(TAILSCALE), "serve", "--bg", "--yes", f"--https={HTTPS_PORT}",

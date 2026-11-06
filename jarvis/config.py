@@ -20,6 +20,8 @@ TZ = ZoneInfo(os.getenv("JARVIS_TZ", "Asia/Dubai"))
 class Settings:
     token: str = ""
     phone_token: str = ""  # shorter token for the iPhone Shortcuts (python -m jarvis phone-setup)
+    feed_token: str = ""   # read-only, goes in the calendar.ics address (iOS Calendar can't send headers)
+    public_url: str = ""   # https://<pc>.<tailnet>.ts.net:8443
     db_path: str = str(ROOT / "data" / "jarvis.db")
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen3:8b"
@@ -35,6 +37,7 @@ class Settings:
     whisper_compute: str = "int8_float16"  # ~1 GB of VRAM next to qwen3:8b
     tts_engine: str = "kokoro"            # or "piper" (much faster, rougher)
     tts_voice: str = "bm_george"          # kokoro voice, or a piper voice name like en_GB-alan-medium
+    tts_speed: float = 0.95               # a touch slower than normal: calm, measured delivery
     wake_threshold: float = 0.5
     mic_device: str | None = None         # None = Windows default; or a name/index from `jarvis devices`
     keep_alive: str = "30m"               # how long Ollama keeps the model loaded; voice mode uses -1
@@ -55,6 +58,8 @@ class Settings:
         return cls(
             token=os.getenv("JARVIS_TOKEN", ""),
             phone_token=os.getenv("JARVIS_PHONE_TOKEN", ""),
+            feed_token=os.getenv("JARVIS_FEED_TOKEN", ""),
+            public_url=os.getenv("JARVIS_PUBLIC_URL", ""),
             db_path=path("JARVIS_DB", cls.db_path),
             files_dir=path("JARVIS_FILES", cls.files_dir),
             inbox_dir=path("JARVIS_INBOX", cls.inbox_dir),
@@ -67,6 +72,7 @@ class Settings:
             whisper_compute=os.getenv("WHISPER_COMPUTE", cls.whisper_compute),
             tts_engine=os.getenv("TTS_ENGINE", cls.tts_engine),
             tts_voice=os.getenv("TTS_VOICE", cls.tts_voice),
+            tts_speed=float(os.getenv("TTS_SPEED", cls.tts_speed)),
             wake_threshold=float(os.getenv("WAKE_THRESHOLD", cls.wake_threshold)),
             mic_device=os.getenv("MIC_DEVICE") or None,
             keep_alive=os.getenv("OLLAMA_KEEP_ALIVE", cls.keep_alive),
