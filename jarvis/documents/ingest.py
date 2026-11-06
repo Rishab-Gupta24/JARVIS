@@ -20,6 +20,8 @@ from jarvis.documents.readers import UnreadableFile
 
 KINDS = ("mess_menu", "timetable", "exam_schedule", "other")
 MAX_BYTES = 20 * 1024 * 1024
+PHOTO_MENU = ("That looks like a photo of a mess menu. Photos can't be read exactly enough for menus, "
+              "so I haven't saved it. Send the menu as a PDF or Excel file instead.")
 
 
 @dataclass
@@ -144,6 +146,11 @@ def ingest(
     kind = "mess_menu" if rows else guess_kind(extracted.text)
     if kind is None:
         kind = classify_with_model(extracted.text, llm) if llm else "other"
+    if kind == "mess_menu" and extracted.used_vision:
+        # Measured on a real notice-board photo: the local vision model gets ~72% of dish
+        # lines exactly right, and menu answers must be exact. The user chose: menus from
+        # PDF/Excel only (6 Nov 2026). Nothing is stored.
+        raise UnreadableFile(PHOTO_MENU)
     unreadable_menu = False
     if kind == "mess_menu" and not rows:
         rows = menu.extract_with_model(extracted.text, llm) if llm else []
@@ -172,6 +179,17 @@ def ingest(
     else:
         reply = f"Saved {filename}. You can ask me about it."
     return IngestResult(doc, reply, meals=len(rows))
+
+
+def reread(conn: sqlite3.Connection, doc_id: int, now: datetime, files_dir: str | Path, *,
+           vision: Transcriber | None = None, llm: JsonModel | None = None) -> IngestResult:
+    """Read a stored file again (e.g. after the parser improved), replacing what was stored."""
+    doc = store.get(conn, doc_id)
+    if doc is None or not doc.stored_path or not Path(doc.stored_path).exists():
+        raise UnreadableFile(f"There's no stored file for document {doc_id}.")
+    data = Path(doc.stored_path).read_bytes()
+    store.delete(conn, doc_id)
+    return ingest(conn, data, doc.filename, now, files_dir, source=doc.source, vision=vision, llm=llm)
 
 
 # ---------- the inbox folder ----------

@@ -19,6 +19,7 @@ TZ = ZoneInfo(os.getenv("JARVIS_TZ", "Asia/Dubai"))
 @dataclass(frozen=True)
 class Settings:
     token: str = ""
+    phone_token: str = ""  # shorter token for the iPhone Shortcuts (python -m jarvis phone-setup)
     db_path: str = str(ROOT / "data" / "jarvis.db")
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen3:8b"
@@ -53,6 +54,7 @@ class Settings:
 
         return cls(
             token=os.getenv("JARVIS_TOKEN", ""),
+            phone_token=os.getenv("JARVIS_PHONE_TOKEN", ""),
             db_path=path("JARVIS_DB", cls.db_path),
             files_dir=path("JARVIS_FILES", cls.files_dir),
             inbox_dir=path("JARVIS_INBOX", cls.inbox_dir),

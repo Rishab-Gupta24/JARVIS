@@ -63,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="jarvis", description="Local voice assistant")
     parser.add_argument("command", nargs="?", default="chat",
                         choices=["chat", "serve", "check", "ingest", "voice", "devices", "mic-test", "holidays",
-                                 "ntfy-setup", "ntfy-server", "notify-test", "remind-test"])
+                                 "ntfy-setup", "ntfy-server", "notify-test", "remind-test", "phone-setup"])
     parser.add_argument("file", nargs="?", help="ingest: the file to read; voice: a 16 kHz WAV to use instead of the mic")
     parser.add_argument("--week", help="for ingest: which week a menu covers, e.g. 'next week'")
     parser.add_argument("--repeats", action="store_true", help="for ingest: the menu repeats every week")
@@ -82,6 +82,14 @@ def main(argv: list[str] | None = None) -> int:
         print("Token and phone password saved in .env (NTFY_TOKEN, NTFY_PHONE_PASSWORD).")
         if values["NTFY_PUBLIC_URL"].startswith("http://127."):
             print("Tailscale isn't signed in yet, so the phone can't reach it. Sign in, then run this again.")
+        return 0
+    if args.command == "phone-setup":
+        from jarvis.core import phone
+
+        values = phone.setup()
+        print(f"Jarvis is reachable from your Tailscale devices at {values['JARVIS_PUBLIC_URL']}")
+        print("The token for the iPhone Shortcuts is JARVIS_PHONE_TOKEN in .env.")
+        print("Restart `python -m jarvis serve` so it accepts the new token.")
         return 0
     if args.command == "ntfy-server":
         from jarvis.notify import server

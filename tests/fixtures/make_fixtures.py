@@ -59,6 +59,51 @@ def make_pdf() -> None:
     ])
 
 
+# mess_menu_hostel.pdf: shaped like a real hostel menu that broke table detection:
+# spaced-out headings ("B R E A K F A S T"), "MONDAY / Date-16/11/2026" labels, one dish
+# per line, shaded rows, and an extra non-meal column ("PS11").
+HOSTEL = {
+    "MONDAY": (["Poha", "Boiled egg", "Tea/ Coffee/ Milk"], ["Rajma Masala", "White Rice/Chapatti", "Pickle / Yoghurt"],
+               ["Chicken Curry", "Paneer Butter Masala", "White Rice / Pickle"], ["Samosa", "Tea/Coffee"],
+               ["Dal tadka", "Jeera Rice"]),
+    "TUESDAY": (["Idli / Sambar", "Coconut Chutney", "Bread/Butter/Jam"], ["Chole", "Bhatura", "Green Salad"],
+                ["Egg Curry", "Dal Fry", "Chapatti"], ["Vada Pav", "Fresh Milk"], ["Paneer Tikka", "Pulao"]),
+    "WEDNESDAY": (["Upma", "Fruit (max 2)"], ["Kadhi Pakoda", "White Rice"], ["Chicken Biryani", "Raitha"],
+                  ["Muffin (2 Max)", "Tea /Coffee"], ["Chole Masala", "Daniya Pulao"]),
+    "THURSDAY": (["Masala Dosa/ Sambar", "Tomato Chutney"], ["Malai Kofta", "Khichadi"], ["Mutton Curry", "Kheer"],
+                 ["Onion Pakoda", "Lassi"], ["Kaju paneer", "Veg Pulao"]),
+    "FRIDAY": (["Paratha (Wheat)", "Curd"], ["Mix Veg", "Mandi Rice"], ["Penne Pasta", "Gulab jamun"],
+               ["Spring Roll", "Lemonade"], ["Dal Fry", "Pulao"]),
+    "SATURDAY": (["Bread Pakora", "Pancakes"], ["Kadhai Paneer", "Rasam"], ["Veg Biryani", "Mirchi ka Salan"],
+                 ["Punjabi Samosa", "Sweet Lassi"], ["", ""]),
+    "SUNDAY": (["Puri Bhaji", "Halwa"], ["Special Lunch"], ["Aloo Beans", "Lemon Rice"], ["Rusk", "Tea Coffee"],
+               ["", ""]),
+}
+
+
+def make_hostel_pdf() -> None:
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
+
+    def spaced(word: str) -> str:
+        return " ".join(word)
+
+    data = [["Week 1", spaced("BREAKFAST"), spaced("LUNCH"), spaced("DINNER"), spaced("SNACKS"), spaced("PS11")]]
+    for i, (day, meals) in enumerate(HOSTEL.items()):
+        data.append([f"{day}\nDate-{16 + i}/11/2026"] + ["\n".join(m) for m in meals])
+    table = Table(data, colWidths=[90, 170, 170, 150, 110, 110])
+    table.setStyle(TableStyle([
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("GRID", (0, 1), (-1, -1), 0.5, colors.black),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.mistyrose, colors.white]),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+    SimpleDocTemplate(str(HERE / "mess_menu_hostel.pdf"), pagesize=landscape(A4),
+                      leftMargin=20, rightMargin=20, topMargin=20, bottomMargin=20).build([table])
+
+
 def make_png() -> None:
     """A 'photo' of the PDF menu, for the vision-model path."""
     import pdfplumber

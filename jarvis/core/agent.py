@@ -82,10 +82,19 @@ def handle(
     source: str = "text",
     session: str | None = None,
     memory: SessionMemory | None = None,
+    shared: bool = False,
 ) -> Reply:
-    """Run one user request through the model and tools. Raises LLMError if the model is unreachable."""
+    """Run one user request through the model and tools. Raises LLMError if the model is unreachable.
+
+    shared=True: `text` is a message the user forwarded from another app (WhatsApp, email).
+    The model is told to add the events it mentions; the guards still see only the message.
+    """
     now = now or now_local()
-    ctx = tools.ToolContext(conn=conn, now=now, source=source, raw_text=text)
+    said = text
+    if shared:
+        said = clean_shared(text)
+        text = SHARED_PROMPT.format(message=said)
+    ctx = tools.ToolContext(conn=conn, now=now, source=source, raw_text=said)
     extra = ""
     if waiting := doc_store.waiting_for_week(conn):
         doc = waiting[0]
@@ -103,7 +112,7 @@ def handle(
     actions: list[dict] = []
     confirmations: list[str] = []
     reply = ""
-    food_question = bool(_FOOD.search(text))
+    food_question = not shared and bool(_FOOD.search(said))  # "dinner party at 8" in a shared message is an event
     nudged = False
     for _ in range(MAX_STEPS):
         msg = llm.chat(messages, tools.TOOL_SPECS)
@@ -144,5 +153,32 @@ def handle(
 
     reply = reply or "Sorry, I didn't catch that."
     if memory is not None and session:
-        memory.add(session, now, text, reply)
+        memory.add(session, now, f"(shared a message) {said}" if shared else said, reply)
     return Reply(reply, actions)
+
+
+# Shared messages ------------------------------------------------------------------
+
+# Its wording avoids the guards' cue words (important, remind, until, ...): the guards
+# look only at the message, but the prompt shouldn't suggest those either.
+SHARED_PROMPT = """I'm forwarding you a message from another app (like WhatsApp or email).
+Add every event, deadline or plan it mentions to my calendar: one create_event call each, copying the day and time words exactly as the message writes them. Use a short title for each. If the message mentions no event, say so in one short sentence and add nothing.
+
+Message:
+\"\"\"
+{message}
+\"\"\""""
+
+# WhatsApp copies look like "[06/11/26, 7:42 PM] Rahul: ..." (iOS) or "06/11/2026, 19:42 - Rahul: ..."
+# (Android export). That timestamp is when it was sent, not the event's date, so it goes.
+_CHAT_PREFIX = re.compile(
+    r"^\s*\[?\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4},?\s+\d{1,2}:\d{2}(?::\d{2})?\s*(?:[ap]\.?m\.?)?\]?\s*(?:-\s*)?"
+    r"(?:[^:\n]{1,40}:\s*)?",
+    re.I | re.M,
+)
+
+
+def clean_shared(text: str) -> str:
+    text = _CHAT_PREFIX.sub("", text.replace("\r\n", "\n"))
+    text = re.sub(r"^\s*(Forwarded|<Media omitted>|This message was deleted)\s*$", "", text, flags=re.I | re.M)
+    return "\n".join(line.rstrip() for line in text.strip().splitlines() if line.strip())[:4000]

@@ -79,6 +79,13 @@ def _insert_rows(conn: sqlite3.Connection, doc_id: int, rows: list[MenuRow]) -> 
     )
 
 
+def delete(conn: sqlite3.Connection, doc_id: int) -> None:
+    """Forget a document and its menu rows (the original file under data/files is kept)."""
+    conn.execute("DELETE FROM documents_fts WHERE rowid = ?", (doc_id,))
+    conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))  # menu_items cascade
+    conn.commit()
+
+
 def get(conn: sqlite3.Connection, doc_id: int) -> Document | None:
     row = conn.execute("SELECT * FROM documents WHERE id = ?", (doc_id,)).fetchone()
     return _doc(row) if row else None

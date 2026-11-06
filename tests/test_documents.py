@@ -72,7 +72,7 @@ def test_read_text_with_markdown_table():
     assert x.tables == [[["Day", "Lunch"], ["Monday", "Dal"]]]
 
 
-@pytest.mark.parametrize("name, fragment", [("menu.docx", "can't read .docx"), ("IMG_1.HEIC", "JPEG")])
+@pytest.mark.parametrize("name, fragment", [("menu.docx", "can't read .docx"), ("IMG_1.HEIC", "HEIC photo")])
 def test_unsupported_files(name, fragment):
     with pytest.raises(readers.UnreadableFile, match=fragment):
         readers.read_bytes(b"x", name)
@@ -89,6 +89,7 @@ def test_photo_needs_vision_model():
     ("Breakfast", "breakfast"), ("BREAKFAST (7:30-9:30 AM)", "breakfast"), ("Evening Snacks", "snacks"),
     ("Hi-Tea", "snacks"), ("Lunch 12.30 - 2.30", "lunch"), ("Dinner Menu", "dinner"), ("Supper", "dinner"),
     ("Masala tea", None), ("Lunch special: biryani", None), ("", None),
+    ("B R E A K F A S T", "breakfast"), ("S N A C K S", "snacks"), ("P S 1 1", None),
 ])
 def test_meal_of(cell, meal):
     assert menu.meal_of(cell) == meal
@@ -98,10 +99,26 @@ def test_meal_of(cell, meal):
     ("Monday", (0, None)), ("WED", (2, None)), ("Mon 16/11", (0, nov(16))),
     ("Wednesday (11.11.2026)", (2, nov(11))), ("Tuesday, 10 Nov", (1, nov(10))),
     ("Mon 17/11", (0, None)),  # 17 Nov is a Tuesday: keep the weekday, drop the bad date
+    ("MONDAY\nDate-2/11/2026", (0, nov(2))), ("SUNDAY\nDate 8/11/2026", (6, nov(8))),
     ("Sunday special", None), ("Monday or Tuesday", None), ("Dal, rice", None),
 ])
 def test_weekday_of(cell, expected):
     assert menu.weekday_of(cell, NOW.date()) == expected
+
+
+def test_hostel_style_pdf_every_cell_exact(conn, tmp_path):
+    """Real menus put spaced-out headings above the table, 'MONDAY / Date-16/11/2026'
+    labels and one dish per line, with shaded rows that break table detection."""
+    from fixtures.make_fixtures import HOSTEL
+
+    r = ingest_fixture(conn, "mess_menu_hostel.pdf", tmp_path)
+    assert r.reply == "Got the mess menu for 16 to 22 November, 28 meals."
+    got = {(row.date, row.meal): row.items for row in store.rows_of(conn, r.document.id)}
+    for i, (day, meals) in enumerate(HOSTEL.items()):
+        for meal, dishes in zip(("breakfast", "lunch", "dinner", "snacks"), meals):
+            expected = ", ".join(d for d in dishes if d)
+            assert got.get((nov(16 + i), meal)) == expected, (day, meal)
+    assert len(got) == 28  # the PS11 column is not a meal and isn't stored as one
 
 
 @pytest.mark.parametrize("cell, cleaned", [
@@ -266,6 +283,17 @@ def test_undated_menu_repeating_or_week_given_up_front(conn, tmp_path):
     assert not ask(conn2, "set_menu_week").ok
 
 
+def test_reread_replaces_what_was_stored(conn, tmp_path):
+    from jarvis.documents.ingest import reread
+
+    first = ingest_fixture(conn, "mess_menu_week.pdf", tmp_path)
+    conn.execute("UPDATE menu_items SET items = 'wrong' WHERE document_id = ?", (first.document.id,))
+    again = reread(conn, first.document.id, NOW, tmp_path)
+    assert again.reply == "Got the mess menu for 9 to 15 November, 28 meals."
+    assert [d.id for d in store.list_all(conn)] == [again.document.id]
+    assert ask(conn, "get_menu", date="this wednesday", meal="breakfast").confirmation == WED_BREAKFAST
+
+
 def test_duplicate_file_stored_once(conn, tmp_path):
     ingest_fixture(conn, "mess_menu_week.pdf", tmp_path)
     again = ingest_fixture(conn, "mess_menu_week.pdf", tmp_path)
@@ -303,10 +331,14 @@ def test_search_documents(conn, tmp_path):
         "I couldn't find anything about that in your files."
 
 
-def test_photo_through_vision(conn, tmp_path):
-    r = ingest_fixture(conn, "mess_menu_photo.png", tmp_path, vision=FakeVision())
-    assert r.reply == "Got the mess menu for 9 to 15 November, 28 meals."
-    assert ask(conn, "get_menu", date="this wednesday", meal="breakfast").confirmation == WED_BREAKFAST
+def test_menu_photo_is_refused_menus_need_a_pdf(conn, tmp_path):
+    """User's choice (6 Nov 2026): photos aren't read exactly enough for menus."""
+    from jarvis.documents.ingest import PHOTO_MENU
+
+    with pytest.raises(readers.UnreadableFile) as e:
+        ingest_fixture(conn, "mess_menu_photo.png", tmp_path, vision=FakeVision())
+    assert str(e.value) == PHOTO_MENU
+    assert store.list_all(conn) == []
 
 
 def test_free_text_menu_keeps_only_dishes_in_the_text(conn, tmp_path):
@@ -387,13 +419,13 @@ def test_upload_and_ask_over_http(tmp_path):
 
     photo = client.post("/documents", files={"file": ("IMG_2.png", b"fake", "image/png")},
                         data={"week": "next week"}, headers=AUTH)
-    assert photo.status_code == 201
+    assert photo.status_code == 422 and "PDF" in photo.json()["detail"]  # menus from photos are refused
 
     assert client.post("/documents", files={"file": ("x.docx", b"x")}, headers=AUTH).status_code == 422
     assert client.post("/documents", data={"text": "x", "week": "blursday"}, headers=AUTH).status_code == 422
     assert client.post("/documents", headers=AUTH).status_code == 422
     assert client.post("/documents", data={"text": "x"}).status_code == 401
-    assert len(client.get("/documents", headers=AUTH).json()) == 3
+    assert len(client.get("/documents", headers=AUTH).json()) == 2
 
     answer = client.post("/capture", json={"text": "what's for breakfast this wednesday?"}, headers=AUTH)
     assert answer.json()["reply"] == WED_BREAKFAST

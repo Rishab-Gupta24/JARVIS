@@ -13,12 +13,42 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from jarvis.core.llm import Transcriber
+from jarvis.core.llm import LLMError, Transcriber
 
 Table = list[list[str]]
 
 TEXT_TYPES = {".txt", ".md", ".text"}
-IMAGE_TYPES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
+IMAGE_TYPES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".heic", ".heif"}
+_HEIF_BRANDS = {b"heic", b"heix", b"hevc", b"heim", b"heis", b"mif1", b"msf1", b"avif"}
+
+
+def sniff(data: bytes) -> str:
+    """The file type from its first bytes, for uploads that arrive without a name
+    (the iPhone Shortcut sends the shared item as the raw request body)."""
+    if data.startswith(b"%PDF"):
+        return ".pdf"
+    if data.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if data.startswith(b"\x89PNG"):
+        return ".png"
+    if data[4:8] == b"ftyp" and data[8:12] in _HEIF_BRANDS:
+        return ".heic"
+    if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return ".webp"
+    if data.startswith(b"PK\x03\x04"):
+        return ".xlsx"
+    return ".txt"
+
+
+def heic_to_jpeg(data: bytes) -> bytes:
+    """iPhone photos are HEIC; the vision model wants JPEG."""
+    import pillow_heif
+    from PIL import Image
+
+    pillow_heif.register_heif_opener()
+    out = io.BytesIO()
+    Image.open(io.BytesIO(data)).convert("RGB").save(out, format="JPEG", quality=92)
+    return out.getvalue()
 SUPPORTED = TEXT_TYPES | IMAGE_TYPES | {".pdf", ".xlsx", ".xlsm", ".csv", ".tsv"}
 
 
@@ -34,6 +64,16 @@ class Extracted:
 
 
 def read_bytes(data: bytes, filename: str, vision: Transcriber | None = None) -> Extracted:
+    try:
+        return _read(data, filename, vision)
+    except (UnreadableFile, LLMError):
+        raise
+    except Exception as e:  # a damaged PDF or spreadsheet: say so instead of crashing
+        ext = Path(filename).suffix.lower().lstrip(".") or "that"
+        raise UnreadableFile(f"I couldn't read that {ext} file; it may be damaged ({type(e).__name__}).") from e
+
+
+def _read(data: bytes, filename: str, vision: Transcriber | None) -> Extracted:
     ext = Path(filename).suffix.lower()
     if ext == ".pdf":
         return _read_pdf(data, vision)
@@ -43,10 +83,13 @@ def read_bytes(data: bytes, filename: str, vision: Transcriber | None = None) ->
         return _read_csv(_decode(data), "\t" if ext == ".tsv" else None)
     if ext in TEXT_TYPES:
         return read_text(_decode(data))
+    if ext in (".heic", ".heif"):
+        try:
+            data = heic_to_jpeg(data)
+        except Exception as e:
+            raise UnreadableFile(f"I couldn't open that HEIC photo: {e}") from e
     if ext in IMAGE_TYPES:
         return _read_image(data, vision)
-    if ext in (".heic", ".heif"):
-        raise UnreadableFile("HEIC photos aren't supported; send it as JPEG (the Share Sheet Shortcut converts it).")
     raise UnreadableFile(f"I can't read {ext or 'that'} files yet. Send a PDF, Excel, CSV, text file or photo.")
 
 
@@ -82,7 +125,15 @@ def _read_pdf(data: bytes, vision: Transcriber | None) -> Extracted:
             page_text = page.extract_text() or ""
             if page_text.strip():
                 texts.append(page_text)
-                tables += [[[_cell(c) for c in row] for row in t] for t in page.extract_tables()]
+                # A menu grid read from word positions beats table detection, which real
+                # menu PDFs often break into fragments (see layout.py).
+                from jarvis.documents.layout import page_grid
+
+                grid = page_grid(page)
+                if grid is not None:
+                    tables.append(grid)
+                else:
+                    tables += [[[_cell(c) for c in row] for row in t] for t in page.extract_tables()]
             elif vision is not None:  # scanned page: no text layer
                 image = io.BytesIO()
                 page.to_image(resolution=200).original.save(image, format="PNG")

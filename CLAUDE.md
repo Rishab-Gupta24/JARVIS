@@ -75,6 +75,16 @@ The model copies the user's own words into tool arguments (`date="next friday"`,
 - Ollama is warmed at startup with `keep_alive=-1` so voice answers never wait for a cold load.
 - Models live in `data/models/` (whisper, kokoro, piper, openwakeword); voice samples in `data/voice-samples/`.
 
+### iPhone online — `/ask`, `/send`, `jarvis/core/share.py`, `jarvis/core/phone.py`
+
+- Jarvis is served to the tailnet on HTTPS **:8443** (`python -m jarvis phone-setup`: `tailscale serve --https=8443` → 127.0.0.1:8765; ntfy stays on :443). Address in `.env` as `JARVIS_PUBLIC_URL`.
+- `JARVIS_PHONE_TOKEN`: 20 lowercase letters and digits (no l/1/o/0), typed into the Shortcuts, revocable without touching `JARVIS_TOKEN`. Compared **case-insensitively** and with spacing ignored, and "Bearer " is optional, because the iPhone keyboard capitalises (seen live: 401s). The main token stays exact.
+- `/ask` and `/send` exist so the Shortcuts stay tiny: request body in, **plain text** out (speak or show as-is). They accept JSON `{"text"}`, form text, a form file or a raw body. Shortcuts sends an **empty** body for a text variable in a "File" body (seen live), so the guide uses JSON for Jarvis and Form (text + file fields) for Send to Jarvis. An empty request logs its content type and length.
+- `/send` sniffs the type from the first bytes (`readers.sniff`): PDF, JPEG, PNG, HEIC (converted with pillow-heif), WebP, xlsx, else text. Photos are read in a background thread and the result pushed via ntfy (a cold vision model takes ~2 min, longer than a Shortcut waits).
+- Routing (`share.py`): shared text that looks like a menu/timetable/exam schedule is stored as a document; other text goes to `agent.handle(shared=True)`, which wraps it in `SHARED_PROMPT` ("add every event it mentions") while the guards see only the message. WhatsApp chat prefixes (`[06/11/26, 8:14 PM] Name:`) are stripped: they're send times, not event dates. The food guard is off for shared messages ("dinner party at 8" is an event). A shared file that isn't a known kind (a notice, a poster) is stored and its events added.
+- **Menus from photos (or scanned PDFs) are refused** with `ingest.PHOTO_MENU` (user's choice). Real menu PDFs are read by **`documents/layout.py`**: word positions, not table detection. That handles spaced headings ("B R E A K F A S T"), "MONDAY / Date-2/11/2026" labels, one dish per line, cell borders drawn as rectangles, and per-line shading. Row and column borders are edges covering ≥95% of the table. Used when a page has ≥2 meal headings and ≥3 day names. The extra **PS11** column is ignored (user's choice).
+- `ingest.reread(conn, doc_id, ...)` re-reads a stored file after a parser fix (`store.delete` + ingest).
+
 ### Reminders to the phone — `jarvis/notify/`
 
 - Path: Jarvis → ntfy on `127.0.0.1:2586` → (content-free poll request) ntfy.sh → Apple push → iPhone ntfy app → fetches the text from the PC's Tailscale HTTPS name, `NTFY_PUBLIC_URL` in `.env` (`tailscale serve` → port 2586, tailnet only). Keep that name out of committed files: the GitHub repo is public. Without Tailscale on the phone it shows only "New message".
@@ -146,8 +156,8 @@ Rules:
    Done when: "Hey Jarvis, what's on tomorrow?" gets a spoken answer.
 4. **Important reminders** — scheduler + ntfy + ntfy iOS app. **✅ Done 6 Nov 2026:** `remind-test` event at 19:43; its 10-minute reminder was sent at 19:33:06 and arrived on the iPhone, with text, on mobile data.
    Done when: an important test event 15 min out alerts the phone on mobile data.
-5. **iPhone online** — Tailscale, "Jarvis" Shortcut (Dictate → POST /capture → Speak), Share Sheet Shortcut (text and files).
-   Done when: a forwarded WhatsApp message becomes an event, and a shared menu photo becomes a stored menu.
+5. **iPhone online** — Tailscale, "Jarvis" Shortcut (Dictate → POST /ask → Speak), "Send to Jarvis" Share Sheet Shortcut (POST /send). **✅ Done 6 Nov 2026 (one gap):** both Shortcuts built; Jarvis answers by voice on the iPhone; from the phone, the user's real menu PDF was stored exactly (28/28, dated 2–8 Nov), and a shared department email (PDF) became an event (Mon 9 Nov), with a resend caught as a duplicate. Gap: a WhatsApp *text* share hasn't been seen from the phone yet; the same `/send` text path passes over Tailscale HTTPS from the PC and in 5 real-model WhatsApp tests.
+   Done when: a forwarded WhatsApp message becomes an event, and a shared menu ~~photo~~ **PDF** becomes a stored menu. *Changed by the user, 6 Nov 2026: menus from photos are refused (the local vision model read only ~72% of dish lines exactly on a real notice-board photo, even day by day with JSON output); photos of notices/posters still add their events.*
 6. **Web app + calendar feed** — agenda page, mic button over HTTPS, `calendar.ics`.
 7. **Offline fallback** — Shortcut offline branch (on-device Use Model → Dictionary output), `jarvis-queue.txt`, sync, Apple Reminders "Jarvis" list mirror for important items.
    Done when: an event captured in airplane mode appears on the PC after reconnecting, exactly once.
@@ -184,6 +194,7 @@ py -3.12 -m venv .venv
 .venv\Scripts\python -m jarvis ntfy-server     # run ntfy on 127.0.0.1:2586 (keep running for phone reminders)
 .venv\Scripts\python -m jarvis notify-test     # push a test notification now
 .venv\Scripts\python -m jarvis remind-test 15  # important event 15 min out; its 10-min reminder fires 5 min later
+.venv\Scripts\python -m jarvis phone-setup     # phone token + tailscale serve :8443 for the iPhone Shortcuts
 ```
 
 ## Open questions (ask the user before depending on these)

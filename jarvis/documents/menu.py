@@ -55,6 +55,8 @@ class WeekInfo:
 def meal_of(cell: str) -> str | None:
     """'Breakfast (7:30-9:30 AM)' -> 'breakfast'. Must be just a meal name, so a dish
     such as 'Masala tea' is never mistaken for the 'tea' (snacks) label."""
+    if re.fullmatch(r"\s*(?:[A-Za-z]\s+){2,}[A-Za-z]\s*", cell):  # "B R E A K F A S T"
+        cell = cell.replace(" ", "")
     s = re.sub(r"\(.*?\)", " ", cell.lower())
     s = re.sub(r"\d{1,2}(?:[:.]\d{2})?\s*(?:am|pm)?\s*(?:-|–|to)\s*\d{1,2}(?:[:.]\d{2})?\s*(?:am|pm)?", " ", s)
     s = " ".join(re.sub(r"[^a-z' ]", " ", s).split())
@@ -74,6 +76,7 @@ def weekday_of(cell: str, today: date) -> tuple[int, date | None] | None:
         return None
     wd = days.pop()
     rest = re.sub(rf"\b(?:{_WD_RE})\b\.?", " ", s)
+    rest = re.sub(r"\bdated?\b\s*[-:]?", " ", rest)  # "MONDAY Date-2/11/2026"
     rest = re.sub(r"(\d)\.(\d)", r"\1/\2", re.sub(r"[()\[\],]", " ", rest)).strip(" -:/.\n")
     if not rest:
         return wd, None

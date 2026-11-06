@@ -88,6 +88,10 @@ class PushSender:
     def send(self, notice: Notice) -> None:
         self._ntfy.publish(notice.title, notice.message, notice.priority, tags=["alarm_clock"])
 
+    def send_text(self, title: str, message: str) -> None:
+        """Anything else for the phone, e.g. the result of reading a shared photo."""
+        self._ntfy.publish(title, message, "default", tags=["robot"])
+
 
 class SpeakSender:
     """Says it aloud on the PC (voice mode). Best effort: never blocks the push."""

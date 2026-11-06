@@ -98,10 +98,12 @@ def test_menu_written_as_sentences(conn, ollama, tmp_path):
     assert "rajma" in rows[(1, "lunch")]
 
 
-def test_menu_photo(conn, vision_model, tmp_path):
-    """Needs the vision model too (OLLAMA_VISION_MODEL)."""
-    r = ingest_fixture(conn, "mess_menu_photo.png", tmp_path, vision=vision_model)
-    assert r.document.kind == "mess_menu" and r.meals == 28, r.reply
-    assert r.document.valid_from.isoformat() == "2026-11-09"
-    _, rows = store.menu_for_day(conn, r.document.valid_from.replace(day=11))
-    assert rows[0].items == "Poha, boiled egg, banana, tea/coffee"
+def test_menu_photo_is_recognised_and_refused(conn, vision_model, tmp_path):
+    """Needs the vision model too (OLLAMA_VISION_MODEL). The real model must still see that
+    it's a menu, so Jarvis can say "send the PDF" rather than store it as something else."""
+    from jarvis.documents.ingest import PHOTO_MENU
+    from jarvis.documents.readers import UnreadableFile
+
+    with pytest.raises(UnreadableFile) as e:
+        ingest_fixture(conn, "mess_menu_photo.png", tmp_path, vision=vision_model)
+    assert str(e.value) == PHOTO_MENU and store.list_all(conn) == []

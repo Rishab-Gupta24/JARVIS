@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import json
 import secrets
 import sqlite3
+import threading
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from typing import Callable, Iterator
 
-from fastapi import APIRouter, Depends, FastAPI, File, Form, Header, HTTPException, Query, Response, UploadFile
+from fastapi import (APIRouter, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response,
+                     UploadFile)
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 from jarvis.calendar import db, holidays, repo
@@ -19,14 +24,16 @@ from jarvis.core.dates import DateParseError, now_local
 from jarvis.core.llm import ChatModel, LLMError, OllamaClient, Transcriber
 from jarvis.documents import store as doc_store
 from jarvis.documents.ingest import MAX_BYTES, InboxWatcher, ingest
-from jarvis.documents.readers import UnreadableFile
-from jarvis.notify.app import start_reminders
+from jarvis.documents.readers import UnreadableFile, sniff
+from jarvis.core.share import is_image, share_file, share_text
+from jarvis.notify.app import push_from, start_reminders
 
 
 class CaptureIn(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
     session_id: str | None = Field(default=None, max_length=100)
     source: str = Field(default="phone", max_length=30)
+    shared: bool = False  # a forwarded message: add the events it mentions
 
 
 class CaptureOut(BaseModel):
@@ -80,7 +87,11 @@ def create_app(
     vision = vision or OllamaClient(settings.ollama_url, settings.vision_model)
     memory = agent.SessionMemory()
     db.connect(settings.db_path).close()  # create the file and tables up front
-    expected = f"Bearer {settings.token}".encode()
+    # The main token, plus a shorter one typed into the iPhone Shortcuts (revocable on its own).
+    # The phone token is all lowercase, so compare it case-insensitively: the iPhone keyboard
+    # likes to capitalise the first letter of what you type (seen live: two 401s).
+    exact = [t.encode() for t in (settings.token, settings.phone_token) if t]
+    any_case = [t.lower().encode() for t in (settings.phone_token,) if t]
 
     def get_conn() -> Iterator[sqlite3.Connection]:
         conn = db.connect(settings.db_path)
@@ -90,8 +101,20 @@ def create_app(
             conn.close()
 
     def require_token(authorization: str | None = Header(default=None)) -> None:
-        if not authorization or not secrets.compare_digest(authorization.encode(), expected):
+        # "Bearer TOKEN", "bearer  TOKEN " or just "TOKEN" all count; only the token matters.
+        value = " ".join((authorization or "").split())
+        token = value[7:] if value.lower().startswith("bearer ") else value
+        ok = any(secrets.compare_digest(token.encode(), t) for t in exact) or any(
+            secrets.compare_digest(token.lower().encode(), t) for t in any_case)
+        if not token or not ok:
             raise HTTPException(401, "Missing or wrong token.", headers={"WWW-Authenticate": "Bearer"})
+
+    def push_later(title: str, message: str) -> None:
+        if (sender := push_from(settings)) is not None:
+            try:
+                sender.send_text(title, message)
+            except Exception as e:  # the result is in the calendar anyway; just say so in the log
+                print(f"share: couldn't push the result: {e}", flush=True)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -148,6 +171,145 @@ def create_app(
         return {"reply": result.reply, "meals": result.meals, "duplicate": result.duplicate,
                 "document": result.document.to_dict()}
 
+    @api.post("/share")
+    def share(
+        response: Response,
+        file: UploadFile | None = File(default=None),
+        text: str | None = Form(default=None, max_length=20_000),
+        session_id: str | None = Form(default=None, max_length=100),
+        conn: sqlite3.Connection = Depends(get_conn),
+    ) -> dict:
+        """The iPhone Share Sheet: a forwarded message (text) or a file/photo. Jarvis decides
+        whether it's events for the calendar, a document to keep, or both."""
+        session = session_id or "phone"
+        now = clock()
+        if file is None:
+            if not text or not text.strip():
+                raise HTTPException(422, "Send some text or a file.")
+            try:
+                result = share_text(conn, llm, text, now, settings.files_dir, session=session, memory=memory)
+            except LLMError as e:
+                raise HTTPException(503, str(e)) from e
+            return {"reply": result.reply, "events_added": result.events_added, "document": result.stored}
+
+        data = file.file.read(MAX_BYTES + 1)
+        name = file.filename or "shared"
+        if len(data) > MAX_BYTES:
+            raise HTTPException(413, "That file is over 20 MB.")
+        if is_image(name) and push_from(settings) is not None:
+            # Reading a photo can take ~2 min if the vision model has to load, longer than
+            # a Shortcut waits. Answer now; push the result to the phone when it's done.
+            def work() -> None:
+                c = db.connect(settings.db_path)
+                try:
+                    r = share_file(c, llm, data, name, clock(), settings.files_dir, vision=vision,
+                                   session=session, memory=memory)
+                    push_later("Jarvis", r.reply)
+                except (UnreadableFile, LLMError) as e:
+                    push_later("Jarvis", f"I couldn't read {name}: {e}")
+                finally:
+                    c.close()
+
+            threading.Thread(target=work, name="share", daemon=True).start()
+            response.status_code = 202
+            return {"reply": "Got the photo. I'm reading it now and will send you a notification when it's done.",
+                    "events_added": 0, "document": None}
+        try:
+            result = share_file(conn, llm, data, name, now, settings.files_dir, vision=vision,
+                                session=session, memory=memory)
+        except UnreadableFile as e:
+            raise HTTPException(422, str(e)) from e
+        except LLMError as e:
+            raise HTTPException(503, str(e)) from e
+        return {"reply": result.reply, "events_added": result.events_added, "document": result.stored}
+
+    # Two endpoints shaped for the simplest possible iPhone Shortcuts. They accept every way
+    # a Shortcut can send something (JSON field, form field, form file, raw body), because
+    # Shortcuts silently sends an empty body for a text variable in a "File" body (seen live).
+    # The reply is plain text to speak or show as-is.
+
+    async def payload(request: Request) -> bytes:
+        ctype = request.headers.get("content-type", "").lower()
+        if "application/json" in ctype:
+            try:
+                obj = json.loads(await request.body() or b"null")
+            except ValueError:
+                return b""
+            if isinstance(obj, dict):
+                obj = obj.get("text") or next((v for v in obj.values() if isinstance(v, str)), "")
+            return obj.encode() if isinstance(obj, str) else b""
+        if "multipart/form-data" in ctype or "x-www-form-urlencoded" in ctype:
+            form = await request.form()
+            files = [v for v in form.values() if hasattr(v, "read")]
+            contents = [await f.read() for f in files]
+            for data in contents:  # a real photo or PDF wins
+                if data.strip() and sniff(data) != ".txt":
+                    return data
+            for value in form.values():  # then a text field
+                if isinstance(value, str) and value.strip():
+                    return value.encode()
+            return next((d for d in contents if d.strip()), b"")  # then a text file
+        return await request.body()
+
+    def log_empty(path: str, request: Request) -> None:
+        print(f"{path}: nothing received (content-type {request.headers.get('content-type')!r}, "
+              f"length {request.headers.get('content-length')!r})", flush=True)
+
+    @api.post("/ask", response_class=PlainTextResponse)
+    async def ask(request: Request, session: str = Query(default="iphone", max_length=100)) -> str:
+        """Body: what the user said. Reply: what Jarvis says back."""
+        text = (await payload(request)).decode("utf-8", errors="replace").strip()[:4000]
+        if not text:
+            log_empty("/ask", request)
+            return "I didn't hear anything."
+
+        def run() -> str:
+            conn = db.connect(settings.db_path)
+            try:
+                return agent.handle(text, conn, llm, now=clock(), source="phone", session=session,
+                                    memory=memory).text
+            except LLMError:
+                return "Sorry, I can't reach my language model right now."
+            finally:
+                conn.close()
+
+        return await run_in_threadpool(run)
+
+    @api.post("/send", response_class=PlainTextResponse)
+    async def send(request: Request, session: str = Query(default="iphone", max_length=100)) -> str:
+        """Body: whatever was shared (message text, photo, PDF, spreadsheet). Jarvis works
+        out which from its first bytes. Reply: one sentence to show on the phone."""
+        data = await payload(request)
+        if not data.strip():
+            log_empty("/send", request)
+            return "Nothing was shared."
+        if len(data) > MAX_BYTES:
+            return "That file is over 20 MB."
+        ext = sniff(data)
+
+        def run() -> str:
+            conn = db.connect(settings.db_path)
+            try:
+                if ext == ".txt":
+                    return share_text(conn, llm, data.decode("utf-8", errors="replace"), clock(),
+                                      settings.files_dir, session=session, memory=memory).reply
+                return share_file(conn, llm, data, f"shared{ext}", clock(), settings.files_dir,
+                                  vision=vision, session=session, memory=memory).reply
+            except UnreadableFile as e:
+                return str(e)
+            except LLMError:
+                return "Sorry, I can't reach my language model right now."
+            finally:
+                conn.close()
+
+        if is_image(f"shared{ext}") and push_from(settings) is not None:
+            def later() -> None:
+                push_later("Jarvis", run())
+
+            threading.Thread(target=later, name="send", daemon=True).start()
+            return "Got the photo. I'm reading it now and will send you a notification when it's done."
+        return await run_in_threadpool(run)
+
     @api.get("/documents")
     def get_documents(conn: sqlite3.Connection = Depends(get_conn)) -> list[dict]:
         return [d.to_dict() for d in doc_store.list_all(conn)]
@@ -160,7 +322,7 @@ def create_app(
     def capture(body: CaptureIn, conn: sqlite3.Connection = Depends(get_conn)) -> CaptureOut:
         try:
             r = agent.handle(body.text, conn, llm, now=clock(), source=body.source,
-                             session=body.session_id or "default", memory=memory)
+                             session=body.session_id or "default", memory=memory, shared=body.shared)
         except LLMError as e:
             raise HTTPException(503, str(e)) from e
         return CaptureOut(reply=r.text, actions=r.actions)
