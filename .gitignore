@@ -9,3 +9,4 @@ inbox/
 *.db-wal
 *.db-shm
 unsloth_compiled_cache/
+CLAUDE.md
