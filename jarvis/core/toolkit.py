@@ -32,6 +32,13 @@ class ToolContext:
     # Jarvis's previous reply in this conversation, when the user is answering it
     # ("Yes" to "Shall I look up the mess menu?").
     replying_to: str | None = None
+    # Set for offline items: events made from them get client_uuid "<key>:1", "<key>:2"...
+    # so a crash halfway through can never create them twice.
+    client_key: str | None = None
+    created: int = 0
+    # PC control: only for the user's own voice/typing/phone, never shared messages or files.
+    allow_pc: bool = False
+    session: str | None = None
 
     @property
     def today(self) -> date:

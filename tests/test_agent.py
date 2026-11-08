@@ -29,8 +29,12 @@ def say(text: str) -> dict:
 def test_system_prompt_has_date_and_zone(conn):
     llm = ScriptedLLM(say("Hello."))
     agent.handle("hi", conn, llm, now=NOW)
-    system = llm.calls[0][0]["content"]
-    assert "Thursday 05 November 2026, 09:00" in system and "Asia/Dubai" in system
+    system, user = llm.calls[0][0]["content"], llm.calls[0][-1]["content"]
+    assert "Asia/Dubai" in system and user == "[Now: Thursday 05 November 2026, 09:00]\nhi"
+    # the system prompt is the same a minute later, so Ollama reuses what it already read
+    llm2 = ScriptedLLM(say("Hello."))
+    agent.handle("hi", conn, llm2, now=NOW.replace(minute=1))
+    assert llm2.calls[0][0]["content"] == system
 
 
 def test_change_replies_with_python_confirmation_in_one_model_call(conn):

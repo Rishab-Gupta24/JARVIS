@@ -10,14 +10,15 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from jarvis.config import TZ
-from jarvis.core import tools
+from jarvis.core import autocorrect, tools
 from jarvis.core.dates import now_local
 from jarvis.core.llm import ChatModel
 from jarvis.core.toolkit import FOOD
 from jarvis.documents import store as doc_store
+from jarvis.pc import confirm
 
 SYSTEM_PROMPT = """You are Jarvis, a voice assistant that manages the user's personal calendar.
-Right now it is {now:%A %d %B %Y, %H:%M} in the user's time zone ({tz}).
+The current date and time in the user's time zone ({tz}) are in brackets at the start of the user's latest message.
 
 How to work:
 - To add, change, move, cancel or flag an event, call the matching tool. Never say you did something unless a tool did it.
@@ -30,13 +31,45 @@ How to work:
 - For anything about mess food (breakfast, lunch, snacks, dinner, what's to eat), call get_menu or find_in_menu. Never answer about food from your own knowledge.
 - For questions about other files the user sent (notices, timetables, exam schedules), call search_documents and answer only from the excerpts.
 - If a tool returns an error, fix the arguments and call it again, or ask the user one short question.
-- If something is outside the calendar and the user's files (general knowledge, news), say briefly that you don't know. Don't offer unrelated lookups.
+- If something is outside the calendar and the user's files and you have no look_up tool, say briefly that you don't know.
 - Reply in one or two short spoken sentences. No markdown, no lists, no emojis.{extra}"""
 
 MAX_STEPS = 5
+# Where PC control is allowed: the user's own voice and typing, on the PC or the iPhone.
+PC_SOURCES = {"terminal", "voice", "phone", "web", "hud"}
+PC_HELP = """
+
+You can also act on the user's PC: start_coding, open_app, close_app, open_project, open_folder, open_website,
+media_control, lock_screen, take_screenshot, show_interface. For anything else on the PC, propose a PowerShell
+command with run_command; it only runs after the user says yes. Never claim you did something on the PC unless a
+tool did it.
+
+Coding: you don't write code yourself; Claude Code on this PC does (start_coding starts a session). Whenever the user
+wants something built, made, coded, fixed or changed (a website, game, app, script, feature), call start_coding at
+once with their request as the task, adding details they gave earlier in this conversation. Don't ask follow-up
+questions first and don't open tutorial websites.
+
+Alarms and timers: set_alarm, set_timer, list_alarms, cancel_alarm, stop_alarm (copy the user's words for times).
+
+Anything you don't know or can't see (a definition, a fact, a person, a place, news): call look_up with a short query
+of just the topic, then answer in one or two spoken sentences from its excerpt and say where it's from ("According to
+Wikipedia, ..."). Never answer such questions from memory alone and never put the user's private details in a query."""
 _FOOD = FOOD
 _NUDGE = ("That answer did not come from a tool. Answers about food must come from get_menu or "
           "find_in_menu. Call the right one now with the user's own day words.")
+_MUST_LOOK = [
+    (re.compile(r"\b(alarms?|timers?|wake me|snooze)\b", re.I),
+     "That answer did not come from a tool. Alarms and timers must come from set_alarm, set_timer, list_alarms, "
+     "cancel_alarm or stop_alarm. Call the right one now."),
+    (re.compile(r"\b(mean|meaning|define|definition|who is|who was|what is a|what are)\b", re.I),
+     "That answer did not come from a tool. If this is about the calendar or the user's files, call that tool; "
+     "otherwise call look_up now with a short query of just the topic."),
+    # Seen in the logs: "Can you close VS Code?" -> "Closing VS Code." with no tool call (there was none for it).
+    (re.compile(r"^\W*(?:(?:can|could|would) you |please |jarvis,? )*(open|close|quit|exit|launch|start|lock|"
+                r"mute|pause|play|turn|take a screenshot)\b", re.I),
+     "That answer did not come from a tool, so nothing happened on the PC. Call the right tool now (open_app, "
+     "close_app, open_website, media_control, lock_screen, take_screenshot, start_coding...)."),
+]
 NO_GUESSING = "I can only tell you what's on the menus you've sent me. Ask me about a day, like 'what's for dinner on Friday?'"
 
 
@@ -94,28 +127,63 @@ def handle(
     if shared:
         said = clean_shared(text)
         text = SHARED_PROMPT.format(message=said)
-    ctx = tools.ToolContext(conn=conn, now=now, source=source, raw_text=said)
-    extra = ""
+    allow_pc = not shared and source in PC_SOURCES
+    if allow_pc:
+        # Misheard or misspelt names ("open could code", "close spot if I"): fixed here, or asked about.
+        said, question = _autocorrect(said, conn, session or source, now)
+        text = said
+        if question is not None:
+            if memory is not None and session:
+                memory.add(session, now, said, question)
+            return Reply(question, [])
+    ctx = tools.ToolContext(conn=conn, now=now, source=source, raw_text=said, allow_pc=allow_pc,
+                            session=session or source)
+
+    # A command Jarvis proposed runs only if these words are a clear yes (checked here, not by the model).
+    if allow_pc and confirm.PENDING.peek(ctx.session, now):
+        pending = confirm.PENDING.take(ctx.session, now)
+        if confirm.YES.match(said.strip()):
+            reason = confirm.refuse_reason(pending.command)
+            code, output = (-2, reason) if reason else confirm.run(pending.command)
+            reply = reason or confirm.spoken_result(code, output)
+            result = {"tool": "run_command", "arguments": {"command": pending.command}, "ok": code == 0,
+                      "result": {"exit_code": code, "output": output}}
+            if memory is not None and session:
+                memory.add(session, now, said, reply)
+            return Reply(reply, [result])
+        if confirm.NO.match(said.strip()):
+            reply = "Okay, I won't run it."
+            if memory is not None and session:
+                memory.add(session, now, said, reply)
+            return Reply(reply, [])
+        # anything else: the proposal is dropped and this is handled as a new request
+
+    extra = PC_HELP if allow_pc else ""
     if waiting := doc_store.waiting_for_week(conn):
         doc = waiting[0]
-        extra = (f"\n\nThe user recently sent a mess menu ('{doc.filename}', document {doc.id}) and was asked "
+        extra += (f"\n\nThe user recently sent a mess menu ('{doc.filename}', document {doc.id}) and was asked "
                  "which week it is for. Only if the user is now telling you that week (or that it repeats), "
                  "call set_menu_week. Food questions still go to get_menu.")
-    messages = [{"role": "system", "content": SYSTEM_PROMPT.format(now=now, tz=TZ.key, extra=extra)}]
+    # The system prompt and tool list never change from one request to the next, so Ollama reuses what it already
+    # read (~4000 tokens, ~4 s on this GPU). The clock goes in the user's message: at the top of the system
+    # prompt it changed every minute and forced a full re-read each time.
+    messages = [{"role": "system", "content": SYSTEM_PROMPT.format(tz=TZ.key, extra=extra)}]
     if memory is not None and session:
         history = memory.history(session, now)
         messages += history
         if history and history[-1]["content"].rstrip().endswith("?"):
             ctx.replying_to = history[-1]["content"]  # the user is answering Jarvis's question
-    messages.append({"role": "user", "content": text})
+    messages.append({"role": "user", "content": f"[Now: {now:%A %d %B %Y, %H:%M}]\n{text}"})
 
     actions: list[dict] = []
     confirmations: list[str] = []
     reply = ""
     food_question = not shared and bool(_FOOD.search(said))  # "dinner party at 8" in a shared message is an event
+    # Other questions whose answer must come from a tool (seen live: "what alarms do I have?" answered from thin air)
+    must_look = next((nudge for pattern, nudge in _MUST_LOOK if allow_pc and pattern.search(said)), None)
     nudged = False
     for _ in range(MAX_STEPS):
-        msg = llm.chat(messages, tools.TOOL_SPECS)
+        msg = llm.chat(messages, tools.specs_for(allow_pc))
         calls = msg.get("tool_calls") or []
         if not calls:
             if food_question and not actions:
@@ -128,6 +196,11 @@ def handle(
                     continue
                 reply = NO_GUESSING
                 break
+            if must_look and not actions and not nudged:
+                nudged = True
+                messages.append({"role": "assistant", "content": msg.get("content", "")})
+                messages.append({"role": "system", "content": must_look})
+                continue
             reply = _clean_reply(msg.get("content", "")) or " ".join(confirmations)
             break
         messages.append({"role": "assistant", "content": msg.get("content", ""), "tool_calls": calls})
@@ -155,6 +228,36 @@ def handle(
     if memory is not None and session:
         memory.add(session, now, f"(shared a message) {said}" if shared else said, reply)
     return Reply(reply, actions)
+
+
+# Autocorrect -------------------------------------------------------------------------
+
+_SAID_INSTEAD = re.compile(r"^\W*(?:no|nope|not that)\W+(?:i\s+(?:meant|said)\s+|it'?s\s+|i want\s+)?"
+                           r"([\w'.+-]+(?:\s+[\w'.+-]+){0,2})\W*$", re.I)
+
+
+def _autocorrect(said: str, conn: sqlite3.Connection, session: str, now: datetime) -> tuple[str, str | None]:
+    """(the request to run, or a question to ask first). A "Did you mean X?" is answered here:
+    yes -> the fixed request (remembered, silent next time); no -> as heard (never asked again);
+    "no, I meant Y" -> with Y (remembered); anything else -> a new request."""
+    waiting = autocorrect.PENDING.take(session, now)
+    if waiting is not None:
+        answer = said.strip()
+        if confirm.YES.match(answer):
+            autocorrect.remember(conn, waiting.fix.heard, waiting.fix.name)
+            return waiting.fix.text, None
+        if m := _SAID_INSTEAD.match(answer):
+            if m[1].lower() not in ("thanks", "thank you", "never mind", "nevermind"):
+                autocorrect.remember(conn, waiting.fix.heard, m[1])
+                return waiting.original.replace(waiting.fix.heard, m[1], 1), None
+        if confirm.NO.match(answer):
+            autocorrect.remember(conn, waiting.fix.heard, None)
+            return waiting.original, None
+    fixed, fix = autocorrect.correct(said, autocorrect.vocabulary(), autocorrect.learned(conn))
+    if fix is None:
+        return fixed, None
+    autocorrect.PENDING.ask(session, fix, fixed, now)
+    return fixed, fix.question
 
 
 # Shared messages ------------------------------------------------------------------

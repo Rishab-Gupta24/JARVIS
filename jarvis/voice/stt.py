@@ -17,6 +17,27 @@ _HALLUCINATIONS = {
 _WAKE = re.compile(r"^\W*(?:(?:hey|hi|hay|a|okay|ok)\W+)?(?:jarvis|jarvis's|jervis|javis|travis)\b\W*", re.I)
 
 
+# Names Whisper should expect (it biases decoding towards them). The Transcriber adds the user's own apps and
+# projects (autocorrect.hotwords); this is the fallback.
+HOTWORDS = "Jarvis, Claude Code, VS Code, Shopify"
+
+
+def fix_names(text: str) -> str:
+    """'build it with cloud code' -> 'build it with Claude Code' (the fixed mishearings in autocorrect.FIXED)."""
+    from jarvis.core.autocorrect import apply_fixed
+
+    return apply_fixed(text)
+
+
+def _hotwords() -> str:
+    try:
+        from jarvis.core.autocorrect import hotwords
+
+        return hotwords()
+    except Exception:
+        return HOTWORDS
+
+
 def decode_audio(data: bytes) -> np.ndarray:
     """Any recording PyAV can open -> 16 kHz mono float32 in [-1, 1].
 
@@ -56,6 +77,7 @@ class Transcriber:
 
         self._model = WhisperModel(model, device=device, compute_type=compute_type,
                                    download_root=str(Path(models_dir) / "whisper"))
+        self.hotwords = _hotwords()  # your apps and projects, so "Spotify" isn't heard as "spot if I"
 
     def warm(self) -> None:
         """The first GPU run compiles kernels; do it now rather than on the first question."""
@@ -65,14 +87,14 @@ class Transcriber:
         """A recorded file (the web app's mic: AAC/MP4 on iPhone Safari, WebM/Opus on Chrome)."""
         segments, _ = self._model.transcribe(
             decode_audio(data), language="en", beam_size=5, condition_on_previous_text=False,
-            hotwords="Jarvis", vad_filter=True,
+            hotwords=self.hotwords, vad_filter=True,
         )
-        return " ".join(s.text.strip() for s in segments if s.no_speech_prob < 0.8).strip()
+        return fix_names(" ".join(s.text.strip() for s in segments if s.no_speech_prob < 0.8).strip())
 
     def transcribe(self, audio: np.ndarray) -> str:
         """16 kHz mono float32 in [-1, 1] -> text."""
         segments, _ = self._model.transcribe(
             audio, language="en", beam_size=5, condition_on_previous_text=False,
-            hotwords="Jarvis", vad_filter=False,
+            hotwords=self.hotwords, vad_filter=False,
         )
-        return " ".join(s.text.strip() for s in segments if s.no_speech_prob < 0.8).strip()
+        return fix_names(" ".join(s.text.strip() for s in segments if s.no_speech_prob < 0.8).strip())

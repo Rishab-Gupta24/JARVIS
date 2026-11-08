@@ -108,6 +108,14 @@ class Speaker:
                 sd.play(audio, rate, device=self._device)
                 sd.wait()
 
+    def play(self, audio, rate: int) -> None:
+        """Any sound (the alarm tone), taking turns with speech."""
+        import sounddevice as sd
+
+        with self._lock:
+            sd.play(audio, rate, device=self._device)
+            sd.wait()
+
     def chime(self) -> None:
         """A short soft two-note 'I'm listening' sound."""
         import sounddevice as sd

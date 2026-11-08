@@ -100,6 +100,33 @@ MIGRATIONS = [
     ALTER TABLE reminders_v4 RENAME TO reminders;
     CREATE INDEX idx_reminders_due ON reminders(status, fire_at);
     """,
+    # 5: things captured on the iPhone with no connection, kept the moment they arrive
+    """
+    CREATE TABLE offline_items (
+        id          TEXT PRIMARY KEY,          -- made on the phone; a resend is ignored
+        raw         TEXT NOT NULL,             -- what the user said
+        captured_at TEXT NOT NULL,             -- UTC ISO; relative dates are read as of this
+        received_at TEXT NOT NULL,
+        status      TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'done', 'failed')),
+        attempts    INTEGER NOT NULL DEFAULT 0,
+        reply       TEXT
+    );
+    """,
+    # 6: alarms and timers (alarms.py); a repeating alarm keeps one row and moves its fire_at on
+    """
+    CREATE TABLE alarms (
+        id          INTEGER PRIMARY KEY,
+        fire_at     TEXT NOT NULL,             -- UTC ISO
+        label       TEXT NOT NULL DEFAULT '',
+        repeat      TEXT CHECK (repeat IN ('daily', 'weekdays')),
+        kind        TEXT NOT NULL DEFAULT 'alarm' CHECK (kind IN ('alarm', 'timer')),
+        status      TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'ringing', 'done', 'missed', 'cancelled')),
+        raw_text    TEXT,
+        created_at  TEXT NOT NULL
+    );
+    CREATE INDEX idx_alarms_due ON alarms(status, fire_at);
+    """,
 ]
 
 

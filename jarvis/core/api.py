@@ -25,12 +25,12 @@ from jarvis.calendar.repo import local_midnight
 from jarvis.config import TZ, Settings
 from jarvis.core import agent
 from jarvis.core.dates import DateParseError, now_local
-from jarvis.core.llm import ChatModel, LLMError, OllamaClient, Transcriber
+from jarvis.core.llm import VISION_NUM_CTX, ChatModel, LLMError, OllamaClient, Transcriber
 from jarvis.documents import store as doc_store
 from jarvis.documents.ingest import MAX_BYTES, InboxWatcher, ingest
 from jarvis.documents.readers import UnreadableFile, sniff
 from jarvis.core.share import is_image, share_file, share_text
-from jarvis.notify.app import push_from, start_reminders
+from jarvis.notify.app import push_from, start_alarms, start_reminders
 
 
 class CaptureIn(BaseModel):
@@ -95,13 +95,16 @@ def create_app(
     send_reminders: bool = True,
     stt=None,  # speech to text for the web app's mic; loaded on first use when None
     voice=None,  # Jarvis's voice for /speak; loaded on first use when None
+    reminder_say: Callable[[str], None] | None = None,  # `jarvis up`: also say reminders aloud on the PC
+    alarm_ring=None,  # `jarvis up`: ring alarms on the PC speakers (alarms.ring_with)
+    on_exchange: Callable[[str, str, str], None] | None = None,  # (source, heard, reply) for the interface
 ) -> FastAPI:
     settings = settings or Settings.from_env()
     if not settings.token:
         raise RuntimeError("Set JARVIS_TOKEN in .env before starting the API.")
     llm = llm or OllamaClient(settings.ollama_url, settings.ollama_model)
     json_llm = llm if hasattr(llm, "json") else None  # classifies files and reads free-text menus
-    vision = vision or OllamaClient(settings.ollama_url, settings.vision_model)
+    vision = vision or OllamaClient(settings.ollama_url, settings.vision_model, num_ctx=VISION_NUM_CTX)
     memory = agent.SessionMemory()
     db.connect(settings.db_path).close()  # create the file and tables up front
     # The main token, plus a shorter one typed into the iPhone Shortcuts (revocable on its own).
@@ -143,12 +146,15 @@ def create_app(
         if fetch_holidays and settings.holiday_regions:
             holidays.refresh_in_background(lambda: db.connect(settings.db_path), list(settings.holiday_regions),
                                            clock, timedelta(days=settings.holiday_refresh_days))
-        reminders = start_reminders(settings, clock) if send_reminders else None
+        reminders = start_reminders(settings, clock, say=reminder_say) if send_reminders else None
+        alarm_clock = start_alarms(settings, clock, ring=alarm_ring) if send_reminders else None
         yield
         if watcher:
             watcher.stop()
         if reminders:
             reminders.stop()
+        if alarm_clock:
+            alarm_clock.stop()
 
     access_log = logging.getLogger("uvicorn.access")
     if not any(isinstance(f, _HideFeedToken) for f in access_log.filters):
@@ -286,12 +292,15 @@ def create_app(
         def run() -> str:
             conn = db.connect(settings.db_path)
             try:
-                return agent.handle(text, conn, llm, now=clock(), source="phone", session=session,
-                                    memory=memory).text
+                reply = agent.handle(text, conn, llm, now=clock(), source="phone", session=session,
+                                     memory=memory).text
             except LLMError:
-                return "Sorry, I can't reach my language model right now."
+                reply = "Sorry, I can't reach my language model right now."
             finally:
                 conn.close()
+            if on_exchange:
+                on_exchange("phone", text, reply)
+            return reply
 
         return await run_in_threadpool(run)
 
@@ -378,6 +387,8 @@ def create_app(
                 reply = "Sorry, I can't reach my language model right now."
             finally:
                 conn.close()
+            if on_exchange:
+                on_exchange("web", heard, reply)
             return {"heard": heard, "reply": reply}
 
         return await run_in_threadpool(run)
@@ -464,6 +475,40 @@ def create_app(
         if size not in (180, 192, 512):
             raise HTTPException(404)
         return FileResponse(web / f"icon-{size}.png", media_type="image/png")
+
+    @app.get("/games/{name}/{path:path}", include_in_schema=False)
+    @app.get("/sites/{name}/{path:path}", include_in_schema=False)
+    def game_file(name: str, path: str = "") -> Response:
+        """Web games and websites made by the studio, for the iPhone over the tailnet. Only folders the
+        studio made (with .studio/state.json) for the web or site stack; only files inside them; never .studio,
+        .git, docs or tests. They hold no personal data, so no token (like /app)."""
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,60}", name):
+            raise HTTPException(404)
+        game = Path(settings.new_projects_dir) / name
+        state = game / ".studio" / "state.json"
+        try:
+            stack = json.loads(state.read_text(encoding="utf-8")).get("stack") if state.is_file() else None
+        except (ValueError, OSError):
+            stack = None
+        if stack not in ("web", "site"):
+            raise HTTPException(404)
+        target = (game / (path or "index.html")).resolve()
+        if game.resolve() not in target.parents or not target.is_file() or \
+                target.relative_to(game.resolve()).parts[0] in (".studio", ".git", "docs", "tests"):
+            raise HTTPException(404)
+        types = {".js": "text/javascript", ".mjs": "text/javascript", ".html": "text/html", ".css": "text/css",
+                 ".json": "application/json", ".png": "image/png", ".svg": "image/svg+xml", ".wav": "audio/wav",
+                 ".mp3": "audio/mpeg", ".ogg": "audio/ogg"}
+        return FileResponse(target, media_type=types.get(target.suffix.lower(), "application/octet-stream"),
+                            headers={"Cache-Control": "no-cache"})
+
+    @app.get("/games/{name}", include_in_schema=False)
+    def game_home(name: str) -> RedirectResponse:
+        return RedirectResponse(f"/games/{name}/")
+
+    @app.get("/sites/{name}", include_in_schema=False)
+    def site_home(name: str) -> RedirectResponse:
+        return RedirectResponse(f"/sites/{name}/")
 
     @api.get("/documents")
     def get_documents(conn: sqlite3.Connection = Depends(get_conn)) -> list[dict]:

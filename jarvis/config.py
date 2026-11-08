@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -38,7 +38,7 @@ class Settings:
     tts_engine: str = "kokoro"            # or "piper" (much faster, rougher)
     tts_voice: str = "bm_george"          # kokoro voice, or a piper voice name like en_GB-alan-medium
     tts_speed: float = 0.95               # a touch slower than normal: calm, measured delivery
-    wake_threshold: float = 0.5
+    wake_threshold: float = 0.4
     mic_device: str | None = None         # None = Windows default; or a name/index from `jarvis devices`
     keep_alive: str = "30m"               # how long Ollama keeps the model loaded; voice mode uses -1
     # festivals and public holidays fetched from the internet (jarvis/calendar/holidays.py)
@@ -48,6 +48,27 @@ class Settings:
     ntfy_url: str = ""
     ntfy_topic: str = ""
     ntfy_token: str = ""
+    # PC control: projects Jarvis can open by name ("jarvis=C:\path;other=D:\path"), plus git repos it finds
+    projects: dict = field(default_factory=lambda: {"Jarvis": str(ROOT)})
+    # where "build me a game" puts a new project
+    new_projects_dir: str = str(Path.home() / "Projects")
+    # who does the coding: "claude" (Claude Code, the default) or "local" (jarvis.coder with a local model)
+    coder: str = "claude"
+    coder_model: str = "qwen2.5-coder:7b"
+    # the game studio (jarvis/studio): planner/researcher/reviewer model, plugins, time budget, helper
+    studio_planner_model: str = "qwen3:8b"
+    # The studio's tester/coder. Empty = the planner model: one model shared with Jarvis's voice brain, so the
+    # GPU never swaps and Jarvis keeps answering during a build (seen 7 Nov 2026: answers timed out at 300 s
+    # while qwen2.5-coder held the GPU). Set to qwen2.5-coder:7b when Jarvis isn't needed meanwhile.
+    studio_coder_model: str = ""
+    # The thinker: plan, design, split, test check, playtest analysis, with Qwen3's thinking on. Empty = the
+    # planner model. A bigger model here (qwen3:14b) swaps in only at those rare decisions.
+    studio_thinker_model: str = ""
+    studio_plugins: tuple = ("ponytail", "test_first", "review", "playtest", "vision", "phone_updates")
+    studio_ponytail: str = "full"
+    studio_hours: float = 6.0
+    studio_helper: str = "claude"  # "claude" or "none"
+    studio_helper_calls: int = 3   # Claude Code calls per project: a last resort after test checks and splitting
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -82,6 +103,21 @@ class Settings:
             ntfy_url=os.getenv("NTFY_URL", ""),
             ntfy_topic=os.getenv("NTFY_TOPIC", ""),
             ntfy_token=os.getenv("NTFY_TOKEN", ""),
+            projects={"Jarvis": str(ROOT), **{
+                k.strip(): v.strip() for k, _, v in
+                (p.partition("=") for p in os.getenv("JARVIS_PROJECTS", "").split(";") if "=" in p)}},
+            new_projects_dir=os.getenv("JARVIS_NEW_PROJECTS_DIR", str(Path.home() / "Projects")),
+            coder=os.getenv("JARVIS_CODER", cls.coder).strip().lower(),
+            coder_model=os.getenv("CODER_MODEL", cls.coder_model),
+            studio_planner_model=os.getenv("STUDIO_PLANNER_MODEL", cls.studio_planner_model),
+            studio_coder_model=os.getenv("STUDIO_CODER_MODEL", cls.studio_coder_model).strip(),
+            studio_thinker_model=os.getenv("STUDIO_THINKER_MODEL", cls.studio_thinker_model).strip(),
+            studio_plugins=tuple(p.strip().lower() for p in os.getenv("STUDIO_PLUGINS", ",".join(cls.studio_plugins))
+                                 .split(",") if p.strip()),
+            studio_ponytail=os.getenv("STUDIO_PONYTAIL", cls.studio_ponytail).strip().lower(),
+            studio_hours=float(os.getenv("STUDIO_HOURS", cls.studio_hours)),
+            studio_helper=os.getenv("STUDIO_HELPER", cls.studio_helper).strip().lower(),
+            studio_helper_calls=int(os.getenv("STUDIO_HELPER_CALLS", cls.studio_helper_calls)),
             host=os.getenv("JARVIS_HOST", cls.host),
             port=int(os.getenv("JARVIS_PORT", cls.port)),
         )

@@ -24,7 +24,7 @@ from jarvis.documents.menu import MenuRow, WeekInfo
 from jarvis.documents.tools import NO_MENU
 from test_agent import ScriptedLLM, call
 
-WED_BREAKFAST = "Breakfast on Wednesday 11 November: Poha, boiled egg, banana, tea/coffee."
+WED_BREAKFAST = "On Wednesday 11 November, for breakfast you have poha, boiled egg and banana."
 
 
 def ask(conn, name, **args):
@@ -196,7 +196,7 @@ def test_yes_to_a_menu_offer_through_the_agent(conn, tmp_path):
     memory.add("s", NOW, "when is diwali?", "I don't know that. Shall I read today's mess menu?")
     llm = ScriptedLLM(call("get_menu", date="today"))
     r = agent.handle("Yes", conn, llm, now=NOW, session="s", memory=memory)
-    assert r.text.startswith("Today, breakfast is"), r.text
+    assert r.text.startswith("Today for breakfast you have poha"), r.text
 
 
 @pytest.mark.parametrize("day", ["20 november", "today", "next month"])
@@ -212,12 +212,13 @@ def test_no_menu_at_all(conn):
 def test_whole_day_and_missing_meal(conn, tmp_path):
     ingest_fixture(conn, "mess_menu_week.pdf", tmp_path)
     assert ask(conn, "get_menu", date="wednesday").confirmation == (
-        "On Wednesday 11 November, breakfast is Poha, boiled egg, banana, tea/coffee; "
-        "lunch is Kadhi pakora, rice, roti, aloo gobi; snacks are Veg sandwich, tea; "
-        "dinner is Chicken biryani, raita, gulab jamun."
+        "On Wednesday 11 November, for breakfast you have poha, boiled egg and banana. "
+        "For lunch there's kadhi pakora and aloo gobi, with rice and roti. "
+        "For snacks there's veg sandwich. "
+        "And for dinner there's chicken biryani and raita, and for dessert to go with it, gulab jamun."
     )
     assert ask(conn, "get_menu", date="next sunday", meal="supper").confirmation == \
-        "Dinner on Sunday 15 November: Khichdi, kadhi, papad, pickle."
+        "On Sunday 15 November, for dinner you have khichdi and kadhi."
     ingest_fixture(conn, "mess_menu_dated.csv", tmp_path)  # 16-22 Nov, no snacks column
     assert ask(conn, "get_menu", date="18 nov", meal="snacks").confirmation == \
         "The menu doesn't list snacks on Wednesday 18 November."
@@ -228,21 +229,21 @@ def test_newest_menu_wins_and_old_weeks_are_not_reused(conn, tmp_path):
     assert ask(conn, "get_menu", date="18 nov", meal="breakfast").confirmation == NO_MENU
     ingest_fixture(conn, "mess_menu_week_revised.csv", tmp_path)
     assert ask(conn, "get_menu", date="this wednesday", meal="breakfast").confirmation == \
-        "Breakfast on Wednesday 11 November: Aloo poha, jalebi, tea."
+        "On Wednesday 11 November, for breakfast you have aloo poha, and for something sweet, jalebi."
     ingest_fixture(conn, "mess_menu_dated.csv", tmp_path)
     assert ask(conn, "get_menu", date="18 nov", meal="breakfast").confirmation == \
-        "Breakfast on Wednesday 18 November: Uttapam, chutney, tea."
+        "On Wednesday 18 November, for breakfast you have uttapam and chutney."
 
 
 def test_rotating_menu_repeats(conn, tmp_path):
     r = ingest_fixture(conn, "mess_menu_rotating.xlsx", tmp_path)
     assert r.reply == "Got the mess menu, 28 meals. I'll use it every week from Monday 2 November."
     assert ask(conn, "get_menu", date="wednesday", meal="breakfast").confirmation == \
-        "Breakfast on Wednesday 11 November: Idli, sambar, chutney, Tea, coffee."
+        "On Wednesday 11 November, for breakfast you have idli, sambar and chutney."
     assert ask(conn, "get_menu", date="23 december", meal="dinner").confirmation == \
-        "Dinner on Wednesday 23 December: Aloo gobi, roti."
+        "On Wednesday 23 December, for dinner you have aloo gobi, with roti."
     assert ask(conn, "get_menu", date="sunday", meal="dinner").confirmation == \
-        "Dinner on Sunday 8 November: Chicken biryani, Raita, Gulab jamun."
+        "On Sunday 8 November, for dinner you have chicken biryani and raita, and for dessert to go with it, gulab jamun."
 
 
 def test_find_in_menu(conn, tmp_path):
@@ -268,7 +269,7 @@ def test_undated_menu_asks_for_its_week(conn, tmp_path):
     assert "set_menu_week" in llm.calls[0][0]["content"]
     assert reply.text == "Got the mess menu for 9 to 15 November, 21 meals."
     assert ask(conn, "get_menu", date="tuesday", meal="breakfast").confirmation == \
-        "Breakfast on Tuesday 10 November: Tuesday breakfast special."
+        "On Tuesday 10 November, for breakfast it's the Tuesday breakfast special."
     assert not ask(conn, "set_menu_week", week="next week").ok  # nothing waiting any more
 
 
@@ -429,3 +430,19 @@ def test_upload_and_ask_over_http(tmp_path):
 
     answer = client.post("/capture", json={"text": "what's for breakfast this wednesday?"}, headers=AUTH)
     assert answer.json()["reply"] == WED_BREAKFAST
+
+
+@pytest.mark.parametrize("said, meal, hour, expected_start", [
+    ("what's for the next meal?", None, 9, "Today for breakfast"),
+    ("what's for the next meal?", None, 16, "Today for snacks"),
+    ("what's for the next meal?", None, 23, "Tomorrow for breakfast"),
+    ("what's next to eat", "next", 12, "Today for lunch"),
+    ("what's for the next breakfast?", "breakfast", 11, "Tomorrow for breakfast"),
+    ("what's for the next breakfast?", "breakfast", 8, "Today for breakfast"),
+])
+def test_next_meal_is_worked_out_from_the_clock(conn, tmp_path, said, meal, hour, expected_start):
+    # Seen live: "What's for the next meal?" got "Could you please specify which meal?"
+    ingest_fixture(conn, "mess_menu_rotating.xlsx", tmp_path)
+    args = {"meal": meal} if meal else {}
+    r = tools.execute("get_menu", args, tools.ToolContext(conn=conn, now=NOW.replace(hour=hour), raw_text=said))
+    assert r.confirmation.startswith(expected_start), r.confirmation

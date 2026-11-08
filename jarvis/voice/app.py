@@ -28,9 +28,9 @@ def make_answer(conn: sqlite3.Connection, llm, clock: Callable[[], datetime] = n
     return answer
 
 
-def build(settings: Settings, conn: sqlite3.Connection, *, source=None, mouth=None, llm=None,
+def build(settings: Settings, conn: sqlite3.Connection, *, source=None, mouth=None, llm=None, stt=None,
           clock: Callable[[], datetime] = now_local, chime: bool = True,
-          log: Callable[[str], None] = print) -> VoiceLoop:
+          log: Callable[[str], None] = print, on_event=None) -> VoiceLoop:
     from jarvis.voice.audio import Microphone, Speaker
     from jarvis.voice.listen import SileroVad, WakeWord
     from jarvis.voice.stt import Transcriber
@@ -48,9 +48,10 @@ def build(settings: Settings, conn: sqlite3.Connection, *, source=None, mouth=No
             step(f"language model {settings.ollama_model} loaded", llm.warm)  # before Whisper: VRAM order
         except LLMError as e:
             log(f"  warning: {e}")
-    stt = step(f"speech recognition {settings.whisper_model} on {settings.whisper_device}", lambda: Transcriber(
-        settings.whisper_model, settings.whisper_device, settings.whisper_compute, settings.models_dir))
-    step("speech recognition warmed up", stt.warm)
+    if stt is None:
+        stt = step(f"speech recognition {settings.whisper_model} on {settings.whisper_device}", lambda: Transcriber(
+            settings.whisper_model, settings.whisper_device, settings.whisper_compute, settings.models_dir))
+        step("speech recognition warmed up", stt.warm)
     wake = step("wake word 'hey jarvis'", lambda: WakeWord(settings.models_dir))
     vad = SileroVad(settings.models_dir)
     if mouth is None:
@@ -61,7 +62,7 @@ def build(settings: Settings, conn: sqlite3.Connection, *, source=None, mouth=No
     if source is None:
         source = Microphone(settings.mic_device)
     config = LoopConfig(wake_threshold=settings.wake_threshold, chime=chime)
-    return VoiceLoop(source, wake, vad, stt, mouth, make_answer(conn, llm, clock), config, log)
+    return VoiceLoop(source, wake, vad, stt, mouth, make_answer(conn, llm, clock), config, log, on_event)
 
 
 def run(settings: Settings, wav: str | None = None) -> int:
@@ -83,9 +84,15 @@ def run(settings: Settings, wav: str | None = None) -> int:
         loop.mouth.say(text)
         loop.source.flush()  # don't hear the reminder as a request
 
-    from jarvis.notify.app import start_reminders
+    from jarvis.calendar.alarms import ring_with
+    from jarvis.notify.app import start_alarms, start_reminders
+
+    def ring(said: str, stop) -> None:
+        ring_with(loop.mouth)(said, stop)
+        loop.source.flush()
 
     start_reminders(settings, now_local, say=say_reminder)
+    start_alarms(settings, now_local, ring=ring)
     print("Listening for 'Hey Jarvis'. Ctrl+C to stop.")
     try:
         loop.run()

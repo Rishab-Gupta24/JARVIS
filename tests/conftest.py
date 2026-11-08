@@ -70,3 +70,16 @@ def ingest_fixture(conn, name: str, files_dir, now=NOW, **kwargs):
     from jarvis.documents.ingest import ingest
 
     return ingest(conn, (FIXTURES / name).read_bytes(), name, now, files_dir, **kwargs)
+
+
+# Autocorrect compares words with installed apps and projects; tests use a fixed list instead.
+TEST_NAMES = ["Jarvis", "Claude Code", "VS Code", "Visual Studio Code", "Spotify", "YouTube", "WhatsApp", "Chrome",
+              "Google Chrome", "Discord", "Notepad", "Calculator", "Steam", "Blender", "Cursor", "Ollama"]
+
+
+@pytest.fixture(autouse=True)
+def fixed_vocabulary(monkeypatch):
+    from jarvis.core import autocorrect
+
+    monkeypatch.setattr(autocorrect, "vocabulary", lambda max_age=600: list(TEST_NAMES))
+    monkeypatch.setattr(autocorrect, "PENDING", autocorrect.Pending())

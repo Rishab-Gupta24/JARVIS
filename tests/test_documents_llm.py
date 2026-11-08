@@ -30,13 +30,13 @@ def ask(conn, llm, text: str) -> str:
 
 @pytest.mark.parametrize("question, answer", [
     ("what's for breakfast this Wednesday?",
-     "Breakfast on Wednesday 11 November: Poha, boiled egg, banana, tea/coffee."),
+     "On Wednesday 11 November, for breakfast you have poha, boiled egg and banana."),
     ("What's for lunch on Monday?",
-     "Lunch on Monday 9 November: Rajma, jeera rice, roti, salad."),
+     "On Monday 9 November, for lunch you have rajma, with jeera rice and roti."),
     ("what are the evening snacks on friday next week",
-     "Snacks on Friday 13 November: Pav bhaji, tea."),
+     "On Friday 13 November, for snacks you have pav bhaji."),
     ("What's for dinner next Sunday?",
-     "Dinner on Sunday 15 November: Khichdi, kadhi, papad, pickle."),
+     "On Sunday 15 November, for dinner you have khichdi and kadhi."),
 ])
 def test_menu_answers_are_exact(menu_conn, ollama, question, answer):
     assert ask(menu_conn, ollama, question) == answer
@@ -63,7 +63,7 @@ def test_no_invented_menu_mid_conversation(menu_conn, ollama, tmp_path):
 
 def test_whole_day(menu_conn, ollama):
     reply = ask(menu_conn, ollama, "What's in the mess on Tuesday?")
-    assert reply.startswith("On Tuesday 10 November, breakfast is Idli, sambar, coconut chutney, coffee;")
+    assert reply.startswith("On Tuesday 10 November, for breakfast you have idli, sambar and coconut chutney.")
 
 
 def test_when_is_a_dish(menu_conn, ollama):
@@ -86,7 +86,7 @@ def test_telling_jarvis_the_week(conn, ollama, tmp_path):
     doc = store.get(conn, r.document.id)
     assert doc.status == "ready" and doc.valid_from.isoformat() == "2026-11-09"
     assert ask(conn, ollama, "what's for breakfast on Tuesday?") == \
-        "Breakfast on Tuesday 10 November: Tuesday breakfast special."
+        "On Tuesday 10 November, for breakfast it's the Tuesday breakfast special."
 
 
 def test_menu_written_as_sentences(conn, ollama, tmp_path):

@@ -11,6 +11,7 @@ transcribe, ask the text brain, speak the answer.
 
 from __future__ import annotations
 
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -18,6 +19,7 @@ from typing import Callable, Iterator, Protocol
 
 import numpy as np
 
+from jarvis.calendar.alarms import silence as silence_alarm
 from jarvis.voice.stt import is_nothing, strip_wake
 
 
@@ -45,7 +47,7 @@ NEAR_MISS = 0.2
 
 @dataclass
 class LoopConfig:
-    wake_threshold: float = 0.5
+    wake_threshold: float = 0.4
     vad_threshold: float = 0.5
     end_silence_frames: int = 10   # 0.8 s of quiet ends the request
     wait_frames: int = 50          # 4 s to start talking before giving up
@@ -58,21 +60,54 @@ class LoopConfig:
 class VoiceLoop:
     def __init__(self, source, wake: Wake, vad: Vad, stt: Stt, mouth: Mouth,
                  answer: Callable[[str], str], config: LoopConfig | None = None,
-                 log: Callable[[str], None] = print):
+                 log: Callable[[str], None] = print,
+                 on_event: Callable[[str, dict], None] | None = None):
         self.source, self.wake, self.vad, self.stt, self.mouth = source, wake, vad, stt, mouth
         self.answer = answer
         self.cfg = config or LoopConfig()
         self.log = log
+        # For the desktop interface: ("state", {"state": "listening"}), ("heard", {"text": ...}),
+        # ("reply", {"text": ...}), ("level", {"value": 0..1}).
+        self.on_event = on_event
+        self._trigger = threading.Event()
+        self._frame_no = 0
+
+    def trigger(self) -> None:
+        """Start listening now, as if "hey jarvis" was heard (the interface's mic button)."""
+        self._trigger.set()
+
+    def _emit(self, kind: str, **data) -> None:
+        if self.on_event is not None:
+            self.on_event(kind, data)
+
+    def _level(self, frame: np.ndarray) -> None:
+        self._frame_no += 1
+        if self.on_event is not None and self._frame_no % 2 == 0:  # ~6 a second is plenty for an animation
+            rms = float(np.sqrt(np.mean((frame.astype(np.float32) / 32768.0) ** 2)))
+            self._emit("level", value=min(1.0, rms * 8))
 
     def run(self) -> None:
         """Runs until the audio source ends (a file), or forever (the microphone)."""
         frames = iter(self.source.frames())
         preroll: deque[np.ndarray] = deque(maxlen=self.cfg.preroll_frames)
         near_miss = 0.0
+        self._emit("state", state="idle")
         for frame in frames:
+            self._level(frame)
+            if self._trigger.is_set():
+                self._trigger.clear()
+                self.wake.reset()
+                silence_alarm()
+                self.log("(listening: started from the interface)")
+                self._conversation(frames, [], chime_first=True)
+                self.wake.reset()
+                continue
             score = self.wake.score(frame)
             if score >= self.cfg.wake_threshold:
                 self.wake.reset()
+                if silence_alarm():
+                    self.log("(wake word: alarm silenced)")
+                    continue  # "hey jarvis" while it rings just stops it
                 self.log("(wake word)")
                 self._conversation(frames, list(preroll))
                 preroll.clear()
@@ -88,10 +123,20 @@ class VoiceLoop:
                 self.log(f"(close to 'hey jarvis': {near_miss:.2f}, needs {self.cfg.wake_threshold})")
                 near_miss = 0.0
 
-    def _conversation(self, frames: Iterator[np.ndarray], preroll: list[np.ndarray]) -> None:
+    def _conversation(self, frames: Iterator[np.ndarray], preroll: list[np.ndarray],
+                      chime_first: bool = False) -> None:
+        try:
+            if chime_first and self.cfg.chime:
+                self.mouth.chime()  # pressed a button: they haven't started talking yet
+            self._converse(frames, preroll)
+        finally:
+            self._emit("state", state="idle")
+
+    def _converse(self, frames: Iterator[np.ndarray], preroll: list[np.ndarray]) -> None:
         retried = False
         after_wake = True
         while True:
+            self._emit("state", state="listening")
             # No chime up front: the laptop mic's echo cancellation mutes input while the
             # speakers play, which cut "what's on" off "what's on tomorrow" in live tests.
             # It chimes only if the user pauses after the wake word.
@@ -99,6 +144,7 @@ class VoiceLoop:
             if audio is None:
                 self.log("(no speech, back to waiting)")
                 return
+            self._emit("state", state="thinking")
             started = time.perf_counter()
             raw = self.stt.transcribe(audio)
             text = strip_wake(raw) if after_wake else raw
@@ -118,15 +164,18 @@ class VoiceLoop:
                 self._speak(f"Sorry, I only caught '{text.strip(' .,!?')}'. Could you say that again?")
                 continue
             self.log(f"you: {text}   ({heard_in:.1f}s to transcribe)")
+            self._emit("heard", text=text)
             started = time.perf_counter()
             reply = self.answer(text)
             self.log(f"jarvis: {reply}   ({time.perf_counter() - started:.1f}s to answer)")
+            self._emit("reply", text=reply)
             self._speak(reply)
             if not reply.rstrip().endswith("?"):
                 return
             after_wake = False  # Jarvis asked something: listen for the answer, no wake word
 
     def _speak(self, text: str) -> None:
+        self._emit("state", state="speaking")
         self.mouth.say(text)
         self.source.flush()  # don't hear Jarvis's own voice as the next request
         self.wake.reset()
@@ -141,6 +190,7 @@ class VoiceLoop:
         for frame in frames:
             buf.append(frame)
             n += 1
+            self._level(frame)
             if self.vad.prob(frame) >= cfg.vad_threshold:
                 spoke, quiet = True, 0
             elif spoke:

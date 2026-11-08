@@ -1,26 +1,25 @@
 """Document tools the model can call.
 
-Menu answers are built here from stored rows and spoken word for word; the
-model only picks the tool and copies the user's day words. It never supplies
-the dishes, so it can't guess them.
+Menu answers are built here from stored rows (phrased by `speak.py`, every
+dish word for word); the model only picks the tool and copies the user's day
+words. It never supplies the dishes, so it can't guess them.
 """
 
 from __future__ import annotations
 
 import difflib
 import re
-from datetime import timedelta
+from datetime import date, datetime, time, timedelta
 
 from pydantic import Field
 
 from jarvis.core.dates import resolve_date, resolve_period, spoken_date
 from jarvis.core.toolkit import FOOD, Args, Tool, ToolContext, ToolError, ToolResult, spec, string
-from jarvis.documents import store
+from jarvis.documents import speak, store
 from jarvis.documents.ingest import describe_menu, week_from_words
 from jarvis.documents.menu import MEALS, meal_of
 
 NO_MENU = "I don't have that week's menu."
-_PLURAL = {"breakfast": "breakfast is", "lunch": "lunch is", "snacks": "snacks are", "dinner": "dinner is"}
 
 
 class MenuArgs(Args):
@@ -51,13 +50,39 @@ def _meal(arg: str | None) -> str | None:
     return meal_of(arg)  # "evening snacks", "supper"; anything else ("food") means the whole day
 
 
+# When each meal is over (the HUD and web app use the same idea to highlight "next").
+MEAL_ENDS = {"breakfast": time(10, 0), "lunch": time(15, 0), "snacks": time(18, 0), "dinner": time(22, 0)}
+_NEXT_MEAL = re.compile(r"\bnext (meal|thing to eat|food)\b|\b(eat|food|meal) next\b|\bnext to eat\b", re.I)
+_NEXT_NAMED = re.compile(r"\bnext (breakfast|lunch|snacks?|dinner)\b", re.I)
+
+
+def next_meal(now: datetime) -> tuple[date, str]:
+    """The meal that's coming up (or being served) now; after dinner, tomorrow's breakfast."""
+    for meal, ends in MEAL_ENDS.items():
+        if now.time() < ends:
+            return now.date(), meal
+    return now.date() + timedelta(days=1), "breakfast"
+
+
+def _day_and_meal(args: MenuArgs, ctx: ToolContext) -> tuple[date, str | None]:
+    """Seen live: "what's for the next meal?" got "which meal?" back. "Next" is worked out here, from the clock."""
+    said = ctx.raw_text or ""
+    plain_day = (args.date or "today").strip().lower() in ("today", "next", "")
+    if (args.meal or "").strip().lower() in ("next", "next meal", "upcoming") or (plain_day and _NEXT_MEAL.search(said)):
+        return next_meal(ctx.now)
+    meal = _meal(args.meal)
+    if plain_day and (m := _NEXT_NAMED.search(said)):
+        meal = _meal(m[1])  # "the next breakfast": today's if it isn't over yet, else tomorrow's
+        return (ctx.today if ctx.now.time() < MEAL_ENDS[meal] else ctx.today + timedelta(days=1)), meal
+    return resolve_date(args.date, ctx.today), meal
+
+
 def get_menu(args: MenuArgs, ctx: ToolContext) -> ToolResult:
     if not ctx.mentions(FOOD):
         # "what's on tomorrow." (as Whisper writes it) sent the model here; that's the calendar.
         raise ToolError("The user didn't ask about food or the mess. For their schedule "
                         "('what's on', 'what do I have'), call list_events instead.")
-    day = resolve_date(args.date, ctx.today)
-    meal = _meal(args.meal)
+    day, meal = _day_and_meal(args, ctx)
     when = spoken_date(day, ctx.today)
     doc, rows = store.menu_for_day(ctx.conn, day)
     if doc is None:
@@ -68,10 +93,9 @@ def get_menu(args: MenuArgs, ctx: ToolContext) -> ToolResult:
     if not rows:
         answer = f"The menu doesn't list {meal or 'anything'} {on_day}."
     elif meal:
-        answer = f"{meal.capitalize()} {on_day}: {rows[0].items}."
+        answer = speak.one_meal(meal, rows[0].items, on_day)
     else:
-        parts = "; ".join(f"{_PLURAL[r.meal]} {r.items}" for r in rows)
-        answer = f"{on_day[:1].upper()}{on_day[1:]}, {parts}."
+        answer = speak.whole_day([(r.meal, r.items) for r in rows], on_day)
     data = {"date": day.isoformat(), "meals": {r.meal: r.items for r in rows}, "file": doc.filename}
     return ToolResult(True, data, answer)
 
@@ -144,7 +168,8 @@ SPECS = [
     spec("get_menu", "Look up the mess menu for a day: what's for breakfast, lunch, snacks or dinner.", {
         "date": string("The day in the user's own words, e.g. 'today', 'tomorrow', 'this wednesday', "
                        "'next monday'. Default today."),
-        "meal": string("breakfast, lunch, snacks or dinner. Leave out for the whole day."),
+        "meal": string("breakfast, lunch, snacks or dinner; 'next' for the next meal ('what's for the next "
+                       "meal?', 'what's next to eat?'). Leave out for the whole day."),
     }),
     spec("find_in_menu", "Find when a dish is on the mess menu, e.g. 'when is biryani this week?'.", {
         "dish": string("The dish, e.g. 'biryani'."),

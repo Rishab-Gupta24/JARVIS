@@ -236,3 +236,44 @@ def test_iphone_style_recording_through_real_whisper(make, ollama):
     r = c.post("/ask-audio", files={"file": ("speech.m4a", m4a, "audio/mp4")}, headers=AUTH).json()
     assert "tomorrow" in r["heard"].lower(), r
     assert "dentist" in r["reply"].lower(), r
+
+
+def test_studio_web_games_are_served_but_nothing_else(make, tmp_path):
+    from jarvis.studio import stacks
+    from jarvis.studio.project import Project, State
+
+    projects = tmp_path / "Projects"
+    c, _ = make(new_projects_dir=str(projects))
+    game = projects / "ink-duel"
+    stacks.get("web").scaffold(game, "Ink Duel")
+    Project(game).save(State("make a web game", "ink-duel", "web"))
+    (game / "docs").mkdir(exist_ok=True)
+    (game / "docs" / "notes.md").write_text("private-ish")
+    page = c.get("/games/ink-duel/")
+    assert page.status_code == 200 and "<canvas" in page.text
+    js = c.get("/games/ink-duel/src/engine.js")
+    assert js.status_code == 200 and js.headers["content-type"].startswith("text/javascript")
+    assert c.get("/games/ink-duel", follow_redirects=False).headers["location"] == "/games/ink-duel/"
+    for bad in ("/games/ink-duel/.studio/state.json", "/games/ink-duel/docs/notes.md", "/games/ink-duel/../x",
+                "/games/ink-duel/%2e%2e/%2e%2e/j.db", "/games/Ink_Duel/", "/games/nope/"):
+        assert c.get(bad).status_code == 404, bad
+    pygame_game = projects / "pong"  # only web-stack games
+    stacks.get("pygame").scaffold(pygame_game, "Pong")
+    Project(pygame_game).save(State("make pong", "pong", "pygame"))
+    assert c.get("/games/pong/main.py").status_code == 404
+
+
+def test_studio_websites_are_served_under_sites(make, tmp_path):
+    from jarvis.studio import stacks
+    from jarvis.studio.project import Project, State
+
+    projects = tmp_path / "Projects"
+    c, _ = make(new_projects_dir=str(projects))
+    site = projects / "lumen-studio"
+    stacks.get("site").scaffold(site, "Lumen Studio")
+    Project(site).save(State("make me a website", "lumen-studio", "site"))
+    page = c.get("/sites/lumen-studio/")
+    assert page.status_code == 200 and "<main>" in page.text
+    assert c.get("/sites/lumen-studio/css/styles.css").headers["content-type"].startswith("text/css")
+    assert c.get("/sites/lumen-studio", follow_redirects=False).headers["location"] == "/sites/lumen-studio/"
+    assert c.get("/sites/lumen-studio/tests/site.test.mjs").status_code == 404

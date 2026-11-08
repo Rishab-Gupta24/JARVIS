@@ -145,7 +145,7 @@ def test_long_speech_is_cut_at_15_seconds():
 def test_near_miss_is_reported_once():
     asked, mouth, _, _, log = run("__www___www__")
     assert asked == [] and mouth.chimes == 0
-    assert log == ["(close to 'hey jarvis': 0.35, needs 0.5)"] * 2
+    assert log == ["(close to 'hey jarvis': 0.35, needs 0.4)"] * 2
 
 
 def test_back_to_waiting_after_each_conversation():

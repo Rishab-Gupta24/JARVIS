@@ -1,4 +1,4 @@
-"""python -m jarvis [chat|serve|check]"""
+"""python -m jarvis [chat|up|serve|check|...]"""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import sys
 from jarvis.calendar import db
 from jarvis.config import Settings
 from jarvis.core import agent
-from jarvis.core.llm import LLMError, OllamaClient
+from jarvis.core.llm import VISION_NUM_CTX, LLMError, OllamaClient
 
 
 def chat(settings: Settings) -> None:
@@ -45,7 +45,7 @@ def ingest_file(settings: Settings, path: str, week: str | None, repeats: bool) 
     from jarvis.documents.readers import UnreadableFile
 
     llm = OllamaClient(settings.ollama_url, settings.ollama_model)
-    vision = OllamaClient(settings.ollama_url, settings.vision_model)
+    vision = OllamaClient(settings.ollama_url, settings.vision_model, num_ctx=VISION_NUM_CTX)
     conn = db.connect(settings.db_path)
     try:
         result = ingest(conn, Path(path).read_bytes(), Path(path).name, now_local(), settings.files_dir,
@@ -59,17 +59,59 @@ def ingest_file(settings: Settings, path: str, week: str | None, repeats: bool) 
     return 0
 
 
+def up(settings: Settings, hidden: bool = False, voice: bool = True) -> int:
+    """Everything in one process, with the desktop interface. What runs at Windows login."""
+    from jarvis.desktop.runtime import Runtime, SingleInstance, log_to_file_if_windowless
+
+    log_to_file_if_windowless()
+    lock = SingleInstance()
+    if not lock.ok:
+        print("Jarvis is already running (look for the orb by the mouse or the tray icon; Ctrl+Alt+J shows it).")
+        return 0
+    from jarvis.desktop.hud import JarvisDesktop
+
+    runtime = Runtime(settings, voice_enabled=voice)
+    desktop = JarvisDesktop(runtime, start_hidden=hidden)
+    import signal
+
+    signal.signal(signal.SIGINT, lambda *_: desktop.quit())  # Ctrl+C in a terminal quits cleanly
+    runtime.start()
+    code = desktop.run()
+    runtime.stop()
+    return code
+
+
+def autostart(action: str) -> int:
+    from jarvis.desktop import autostart as auto
+
+    if action == "on":
+        print(f"Jarvis will start when you log in to Windows ({auto.enable()}).")
+    elif action == "off":
+        print("Jarvis won't start at login any more." if auto.disable() else "It wasn't set to start at login.")
+    else:
+        print("On: Jarvis starts at login." if auto.is_enabled() else "Off: Jarvis doesn't start at login.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="jarvis", description="Local voice assistant")
     parser.add_argument("command", nargs="?", default="chat",
                         choices=["chat", "serve", "check", "ingest", "voice", "devices", "mic-test", "holidays",
-                                 "ntfy-setup", "ntfy-server", "notify-test", "remind-test", "phone-setup"])
-    parser.add_argument("file", nargs="?", help="ingest: the file to read; voice: a 16 kHz WAV to use instead of the mic")
+                                 "ntfy-setup", "ntfy-server", "notify-test", "remind-test", "phone-setup", "up",
+                                 "autostart"])
+    parser.add_argument("file", nargs="?", help="ingest: the file to read; voice: a 16 kHz WAV to use instead of the "
+                                                "mic; autostart: on, off or status")
+    parser.add_argument("--hidden", action="store_true", help="for up: start with just the orb by the mouse")
+    parser.add_argument("--no-voice", action="store_true", help="for up: no microphone or speech")
     parser.add_argument("--week", help="for ingest: which week a menu covers, e.g. 'next week'")
     parser.add_argument("--repeats", action="store_true", help="for ingest: the menu repeats every week")
     args = parser.parse_args(argv)
     settings = Settings.from_env()
 
+    if args.command == "up":
+        return up(settings, hidden=args.hidden, voice=not args.no_voice)
+    if args.command == "autostart":
+        return autostart(args.file or "status")
     if args.command == "voice":
         from jarvis.voice.app import run
 

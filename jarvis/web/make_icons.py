@@ -28,4 +28,5 @@ def icon(size: int) -> Image.Image:
 if __name__ == "__main__":
     for size in (180, 192, 512):
         icon(size).save(HERE / f"icon-{size}.png", optimize=True)
+    icon(256).save(HERE / "icon.ico", sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (256, 256)])
     print("icons written to", HERE)

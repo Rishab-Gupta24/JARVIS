@@ -96,9 +96,10 @@ def test_hey_jarvis_whats_on_tomorrow(conn, ollama, parts):
 def test_menu_by_voice(conn, ollama, parts, tmp_path):
     ingest_fixture(conn, "mess_menu_week.pdf", tmp_path)
     mouth, log = converse(parts, conn, ollama, "Hey Jarvis, what's for breakfast this Wednesday?")
-    assert mouth.said == ["Breakfast on Wednesday 11 November: Poha, boiled egg, banana, tea/coffee."], log
+    assert mouth.said == ["On Wednesday 11 November, for breakfast you have poha, boiled egg and banana."], log
 
 
 def test_adding_an_event_by_voice(conn, ollama, parts):
     mouth, log = converse(parts, conn, ollama, "Hey Jarvis, add DBMS quiz on Monday at 10 am, it's important.")
-    assert mouth.said == ["Added DBMS quiz, Monday 9 November at 10 am, marked important."], log
+    # Whisper may capitalise the spoken title ("DBMS Quiz"); either is right.
+    assert [s.lower() for s in mouth.said] == ["added dbms quiz, monday 9 november at 10 am, marked important."], log

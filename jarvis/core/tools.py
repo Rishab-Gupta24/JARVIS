@@ -28,7 +28,10 @@ from jarvis.core.toolkit import Tool, ToolContext, ToolError, ToolResult
 from jarvis.core.toolkit import run as _run
 from jarvis.core.toolkit import spec as _fn
 from jarvis.core.toolkit import string as _s
+from jarvis.calendar import alarm_tools
+from jarvis.core import web
 from jarvis.documents import tools as document_tools
+from jarvis.pc import tools as pc_tools
 
 __all__ = ["TOOL_SPECS", "ToolContext", "ToolError", "ToolResult", "execute"]
 
@@ -181,13 +184,17 @@ def _find_target(args: MatchArgs, ctx: ToolContext) -> Event:
 def create_event(args: CreateArgs, ctx: ToolContext) -> ToolResult:
     day, start_text = resolve_when(args.date, args.start_time, ctx.now)
     start, end, all_day = _event_times(day, start_text, args.end_time, args.duration_minutes)
+    client_uuid = None
+    if ctx.client_key:  # offline item: a stable id per event, so a retry can't add it twice
+        ctx.created += 1
+        client_uuid = f"{ctx.client_key}:{ctx.created}"
     event = repo.create_event(
         ctx.conn,
         repo.NewEvent(
             title=_tidy_title(args.title), start=start, end=end, all_day=all_day,
             location=args.location, notes=args.notes,
             important=args.important and _asked_important(ctx.raw_text),
-            source=ctx.source, raw_text=ctx.raw_text,
+            source=ctx.source, raw_text=ctx.raw_text, client_uuid=client_uuid,
         ),
         ctx.now,
     )
@@ -379,7 +386,7 @@ TOOL_SPECS = [
         **_MATCH,
         "important": {"type": "boolean", "description": "true to mark important (default), false to unmark."},
     }),
-] + document_tools.SPECS
+] + document_tools.SPECS + alarm_tools.SPECS + web.SPECS + pc_tools.SPECS
 
 _TOOLS: dict[str, Tool] = {
     "create_event": (CreateArgs, create_event),
@@ -389,7 +396,17 @@ _TOOLS: dict[str, Tool] = {
     "delete_event": (MatchArgs, delete_event),
     "set_important": (ImportantArgs, set_important),
     **document_tools.TOOLS,
+    **alarm_tools.TOOLS,
+    **web.TOOLS,
+    **pc_tools.TOOLS,
 }
+
+PC_TOOLS = pc_tools.NAMES | alarm_tools.NAMES | web.NAMES  # only for the user's own requests
+
+
+def specs_for(allow_pc: bool) -> list[dict]:
+    """The tool list shown to the model; PC control only for the user's own requests."""
+    return TOOL_SPECS if allow_pc else [s for s in TOOL_SPECS if s["function"]["name"] not in PC_TOOLS]
 
 
 def execute(name: str, raw_args: Any, ctx: ToolContext) -> ToolResult:
